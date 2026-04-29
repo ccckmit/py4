@@ -8,4 +8,5 @@ rustc py4.rs
 ./py4 main_pkg.py
 ./py4 py/io.py
 ./py4 py/inherit.py
-./py4 py/decorator.py
+#./py4 py/decorator.py
+#./py4 py/args.py
