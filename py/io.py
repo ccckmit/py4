@@ -1,5 +1,5 @@
 # 1. 寫入檔案
-filename = "hello.txt"
+filename = "out/hello.txt"
 print("Writing to file:", filename)
 f = open(filename, "w")
 f.write("Hello, Rust and Python!\n")
