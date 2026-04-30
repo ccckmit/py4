@@ -1,0 +1,2 @@
+Hello, Rust and Python!
+This is a mini interpreter doing real I/O.

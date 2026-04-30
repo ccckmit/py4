@@ -210,26 +210,8 @@ impl<'a> Parser<'a> {
         let mut e = self.parse_and()?; while self.match_token(&TokenKind::Or) { e = Expr::Logical(LogicOp::Or, Box::new(e), Box::new(self.parse_and()?)); } Ok(e) 
     }
 
-fn parse_block(&mut self) -> Result<Vec<Stmt>, String> { 
-        // 如果冒號後面是換行，這是一個標準的縮排多行區塊
-        if self.match_token(&TokenKind::Newline) {
-            self.expect(TokenKind::Indent, "expected indent")?; 
-            self.skip_newlines(); 
-            let mut b = Vec::new(); 
-            while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof { 
-                b.push(self.parse_stmt()?); 
-                self.skip_newlines(); 
-            } 
-            self.expect(TokenKind::Dedent, "expected dedent")?; 
-            Ok(b) 
-        } else {
-            // 如果冒號後面直接跟著語句 (例如 def foo(): return 1)
-            // 就直接解析那一個單行語句
-            let stmt = self.parse_stmt()?;
-            Ok(vec![stmt])
-        }
-    }
-    
+    fn parse_block(&mut self) -> Result<Vec<Stmt>, String> { self.expect(TokenKind::Newline, "expected newline")?; self.expect(TokenKind::Indent, "expected indent")?; self.skip_newlines(); let mut b = Vec::new(); while self.peek().kind != TokenKind::Dedent && self.peek().kind != TokenKind::Eof { b.push(self.parse_stmt()?); self.skip_newlines(); } self.expect(TokenKind::Dedent, "expected dedent")?; Ok(b) }
+
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         if self.match_token(&TokenKind::Import) { let n = self.parse_dotted_name()?; self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::Import(n)); }
         if self.match_token(&TokenKind::From) { let mod_n = self.parse_dotted_name()?; self.expect(TokenKind::Import, "expected 'import'")?; let mut names = Vec::new(); loop { if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected name")?.kind { names.push(n.clone()); } if !self.match_token(&TokenKind::Comma) { break; } } self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::FromImport(mod_n, names)); }
@@ -342,48 +324,17 @@ enum ExecStatus { Continue, Return(PyValue), Break, ContinueLoop }
 fn load_module(rt: &mut Runtime, name: &str) -> Result<PyValue, PyValue> {
     if let Some(m) = rt.sys_modules.get(name) { return Ok(m.clone()); }
 
+    // --- 使用分離出來的 stdlib (lib4.rs) ---
     if let Some(native_module) = lib4::load_native_module(name) {
         rt.sys_modules.insert(name.to_string(), native_module.clone());
         return Ok(native_module);
     }
 
-    // --- 新增: 從 sys.path 獲取搜尋路徑 ---
-    let mut search_paths = vec![".".to_string()];
-    if let Some(PyValue::Module(_, sys_env)) = rt.sys_modules.get("sys") {
-        if let Ok(PyValue::List(l)) = sys_env.borrow().get("path") {
-            search_paths.clear();
-            for item in l.borrow().iter() {
-                if let PyValue::Str(s) = item { search_paths.push(s.clone()); }
-            }
-        }
-    }
-
-    let path_base = name.replace('.', "/");
-    let mut found_src = None;
-    let mut found_path = String::new();
-
-    // 遍歷所有 sys.path 尋找模組
-    for base in search_paths {
-        let file_path = if base.is_empty() { format!("{}.py", path_base) } else { format!("{}/{}.py", base, path_base) };
-        let pkg_path = if base.is_empty() { format!("{}/__init__.py", path_base) } else { format!("{}/{}/__init__.py", base, path_base) };
-
-        if let Ok(s) = fs::read_to_string(&file_path) {
-            found_src = Some(s); found_path = file_path; break;
-        } else if let Ok(s) = fs::read_to_string(&pkg_path) {
-            found_src = Some(s); found_path = pkg_path; break;
-        }
-    }
-
-    let src = found_src.ok_or_else(|| py_err_val("ImportError", &format!("No module named '{}'", name)))?;
-    // ----------------------------------------
-
-    let tokens = lex_source(&src).map_err(|e| py_err_val("SyntaxError", &e))?; 
-    let mut parser = Parser::new(&tokens, &found_path); 
-    let ast = parser.parse_module().map_err(|e| py_err_val("SyntaxError", &e))?;
+    let path_base = name.replace('.', "/"); let file_path = format!("{}.py", path_base); let pkg_path = format!("{}/__init__.py", path_base);
+    let (path, src) = if let Ok(s) = fs::read_to_string(&file_path) { (file_path, s) } else if let Ok(s) = fs::read_to_string(&pkg_path) { (pkg_path, s) } else { return py_err("ImportError", &format!("No module named '{}'", name)); };
+    let tokens = lex_source(&src).map_err(|e| py_err_val("SyntaxError", &e))?; let mut parser = Parser::new(&tokens, &path); let ast = parser.parse_module().map_err(|e| py_err_val("SyntaxError", &e))?;
     let mod_env = Env::new(None); install_builtins(&mod_env); exec_block(rt, &mod_env, &ast)?;
-    let module_val = PyValue::Module(name.to_string(), mod_env); 
-    rt.sys_modules.insert(name.to_string(), module_val.clone()); 
-    Ok(module_val)
+    let module_val = PyValue::Module(name.to_string(), mod_env); rt.sys_modules.insert(name.to_string(), module_val.clone()); Ok(module_val)
 }
 
 fn assign_target(rt: &mut Runtime, env: &Rc<RefCell<Env>>, target: &Expr, val: PyValue) -> Result<(), PyValue> {
@@ -534,12 +485,6 @@ fn main() {
 
     let globals = Env::new(None); install_builtins(&globals);
     let mut rt = Runtime { sys_modules: HashMap::new() };
-
-    // --- 新增: 強制在背景預先載入 sys 模組，這樣底層機制就能使用 sys.path ---
-    if let Some(sys_mod) = lib4::load_native_module("sys") {
-        rt.sys_modules.insert("sys".to_string(), sys_mod);
-    }
-    // -----------------------------------------------------------------
 
     let tokens = lex_source(&src).unwrap_or_else(|e| { eprintln!("SyntaxError: {}", e); process::exit(1); });
     let mut parser = Parser::new(&tokens, &args[1]);

@@ -82,28 +82,12 @@ fn load_os() -> PyValue {
 // ==========================
 // 4. Sys Module
 // ==========================
-// ==========================
-// 4. Sys Module
-// ==========================
 fn load_sys() -> PyValue {
     let env = Env::new(None);
+    // 把 Rust 抓到的 arguments 傳給 Python (略過第一個 ./py4 執行檔本身)
     let args: Vec<PyValue> = env::args().skip(1).map(PyValue::Str).collect();
     env.borrow_mut().set("argv", PyValue::List(Rc::new(RefCell::new(args))));
     
-    // --- 新增: 初始化 sys.path ---
-    let mut paths = vec![PyValue::Str(".".to_string())]; // 預設加入當前目錄
-    if let Ok(pythonpath) = env::var("PYTHONPATH") {
-        // 根據作業系統決定分隔符號 (Windows 是 ';', Linux/Mac 是 ':')
-        let separator = if cfg!(windows) { ";" } else { ":" };
-        for p in pythonpath.split(separator) {
-            if !p.is_empty() {
-                paths.push(PyValue::Str(p.to_string()));
-            }
-        }
-    }
-    env.borrow_mut().set("path", PyValue::List(Rc::new(RefCell::new(paths))));
-    // ----------------------------
-
     env.borrow_mut().set("exit", PyValue::Builtin("exit".into(), Rc::new(|_, a, _| {
         let code = if a.is_empty() { 0 } else { a[0].as_num()? as i32 };
         std::process::exit(code);
