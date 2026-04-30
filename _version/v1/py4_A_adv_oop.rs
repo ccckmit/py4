@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 
-mod lib4; // 引入標準庫模組
-
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::env;
@@ -16,9 +14,8 @@ use std::rc::Rc;
 // =========================================================================
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum TokenKind {
-    Eof, Newline, Indent, Dedent, Name(String), Int(i64), Float(f64), 
-    String(String), FString(String),
+enum TokenKind {
+    Eof, Newline, Indent, Dedent, Name(String), Int(i64), Float(f64), String(String),
     Def, Class, If, Elif, Else, While, For, In, Return, Break, Continue, Pass,
     Try, Except, Raise, As, And, Or, Not, NoneVal, TrueVal, FalseVal, Lambda,
     Import, From,
@@ -28,40 +25,25 @@ pub(crate) enum TokenKind {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Token { pub(crate) kind: TokenKind, line: usize, col: usize }
+struct Token { kind: TokenKind, line: usize, col: usize }
 
-pub(crate) fn lex_source(source: &str) -> Result<Vec<Token>, String> {
+fn lex_source(source: &str) -> Result<Vec<Token>, String> {
     let mut tokens = Vec::new(); let mut indent_stack = vec![0]; let mut line_no = 1;
-    let mut paren_level = 0; // 新增：括號層級追蹤
-    
     for line in source.lines() {
         let mut col = 0; let mut indent = 0; let chars: Vec<char> = line.chars().collect();
         while col < chars.len() && (chars[col] == ' ' || chars[col] == '\t') { indent += if chars[col] == '\t' { 4 } else { 1 }; col += 1; }
         if col == chars.len() || chars[col] == '#' { line_no += 1; continue; }
 
-        // 如果在括號內，完全忽略縮排的計算與 Token 產生
-        if paren_level == 0 {
-            let top = *indent_stack.last().unwrap();
-            if indent > top { indent_stack.push(indent); tokens.push(Token { kind: TokenKind::Indent, line: line_no, col: 1 }); }
-            else {
-                while indent < *indent_stack.last().unwrap() { indent_stack.pop(); tokens.push(Token { kind: TokenKind::Dedent, line: line_no, col: 1 }); }
-                if indent != *indent_stack.last().unwrap() { return Err(format!("inconsistent indent at line {}", line_no)); }
-            }
+        let top = *indent_stack.last().unwrap();
+        if indent > top { indent_stack.push(indent); tokens.push(Token { kind: TokenKind::Indent, line: line_no, col: 1 }); }
+        else {
+            while indent < *indent_stack.last().unwrap() { indent_stack.pop(); tokens.push(Token { kind: TokenKind::Dedent, line: line_no, col: 1 }); }
+            if indent != *indent_stack.last().unwrap() { return Err(format!("inconsistent indent at line {}", line_no)); }
         }
 
         let mut i = col;
         while i < chars.len() {
             let c = chars[i]; if c == '#' { break; } if c.is_ascii_whitespace() { i += 1; continue; }
-            
-            if (c == 'f' || c == 'F') && i + 1 < chars.len() && (chars[i+1] == '\'' || chars[i+1] == '"') {
-                let quote = chars[i+1]; let start = i; i += 2; let mut val = String::new();
-                while i < chars.len() && chars[i] != quote {
-                    if chars[i] == '\\' { i += 1; if i == chars.len() { break; } match chars[i] { 'n' => val.push('\n'), 't' => val.push('\t'), '\\' => val.push('\\'), '{' => val.push('{'), '}' => val.push('}'), '\'' => val.push('\''), '"' => val.push('"'), _ => val.push(chars[i]) } } else { val.push(chars[i]); } i += 1;
-                }
-                if i == chars.len() { return Err(format!("unterminated f-string line {}", line_no)); } i += 1;
-                tokens.push(Token { kind: TokenKind::FString(val), line: line_no, col: start + 1 }); continue;
-            }
-
             if c.is_ascii_alphabetic() || c == '_' {
                 let start = i; while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_') { i += 1; }
                 let text: String = chars[start..i].iter().collect();
@@ -87,19 +69,22 @@ pub(crate) fn lex_source(source: &str) -> Result<Vec<Token>, String> {
             if c == '\'' || c == '"' {
                 let quote = c; let start = i; let mut val = String::new(); i += 1;
                 while i < chars.len() && chars[i] != quote {
-                    if chars[i] == '\\' { i += 1; if i == chars.len() { break; } match chars[i] { 'n' => val.push('\n'), 't' => val.push('\t'), '\\' => val.push('\\'), '\'' => val.push('\''), '"' => val.push('"'), _ => val.push(chars[i]) } } else { val.push(chars[i]); } i += 1;
+                    if chars[i] == '\\' {
+                        i += 1; if i == chars.len() { break; }
+                        match chars[i] { 'n' => val.push('\n'), 't' => val.push('\t'), '\\' => val.push('\\'), '\'' => val.push('\''), '"' => val.push('"'), _ => val.push(chars[i]) }
+                    } else { val.push(chars[i]); }
+                    i += 1;
                 }
                 if i == chars.len() { return Err(format!("unterminated string line {}", line_no)); } i += 1;
                 tokens.push(Token { kind: TokenKind::String(val), line: line_no, col: start + 1 }); continue;
             }
-            
             let start = i;
-            let (kind, step) = if i + 1 < chars.len() && chars[i] == '=' && chars[i+1] == '=' { (TokenKind::Eqeq, 2) } else if i + 1 < chars.len() && chars[i] == '!' && chars[i+1] == '=' { (TokenKind::Ne, 2) } else if i + 1 < chars.len() && chars[i] == '<' && chars[i+1] == '=' { (TokenKind::Le, 2) } else if i + 1 < chars.len() && chars[i] == '>' && chars[i+1] == '=' { (TokenKind::Ge, 2) } else if i + 1 < chars.len() && chars[i] == '+' && chars[i+1] == '=' { (TokenKind::PlusEq, 2) } else if i + 1 < chars.len() && chars[i] == '-' && chars[i+1] == '=' { (TokenKind::MinusEq, 2) } else {
+            let (kind, step) = if i + 1 < chars.len() && chars[i] == '=' && chars[i+1] == '=' { (TokenKind::Eqeq, 2) }
+            else if i + 1 < chars.len() && chars[i] == '!' && chars[i+1] == '=' { (TokenKind::Ne, 2) } else if i + 1 < chars.len() && chars[i] == '<' && chars[i+1] == '=' { (TokenKind::Le, 2) }
+            else if i + 1 < chars.len() && chars[i] == '>' && chars[i+1] == '=' { (TokenKind::Ge, 2) } else if i + 1 < chars.len() && chars[i] == '+' && chars[i+1] == '=' { (TokenKind::PlusEq, 2) }
+            else if i + 1 < chars.len() && chars[i] == '-' && chars[i+1] == '=' { (TokenKind::MinusEq, 2) } else {
                 let k = match c {
-                    // --- 修改：追蹤括號層級 ---
-                    '(' => { paren_level += 1; TokenKind::Lparen }, ')' => { paren_level -= 1; TokenKind::Rparen }, 
-                    '[' => { paren_level += 1; TokenKind::Lbracket }, ']' => { paren_level -= 1; TokenKind::Rbracket }, 
-                    '{' => { paren_level += 1; TokenKind::Lbrace }, '}' => { paren_level -= 1; TokenKind::Rbrace },
+                    '(' => TokenKind::Lparen, ')' => TokenKind::Rparen, '[' => TokenKind::Lbracket, ']' => TokenKind::Rbracket, '{' => TokenKind::Lbrace, '}' => TokenKind::Rbrace,
                     ',' => TokenKind::Comma, ':' => TokenKind::Colon, '.' => TokenKind::Dot, '+' => TokenKind::Plus, '-' => TokenKind::Minus, '*' => TokenKind::Star,
                     '/' => TokenKind::Slash, '%' => TokenKind::Percent, '=' => TokenKind::Equal, '<' => TokenKind::Lt, '>' => TokenKind::Gt,
                     _ => return Err(format!("unexpected '{}' line {}", c, line_no)),
@@ -107,12 +92,7 @@ pub(crate) fn lex_source(source: &str) -> Result<Vec<Token>, String> {
             };
             tokens.push(Token { kind, line: line_no, col: start + 1 }); i += step;
         }
-        
-        // 如果在括號內，我們連 Newline 都不產生！
-        if paren_level == 0 {
-            tokens.push(Token { kind: TokenKind::Newline, line: line_no, col: chars.len() + 1 }); 
-        }
-        line_no += 1;
+        tokens.push(Token { kind: TokenKind::Newline, line: line_no, col: chars.len() + 1 }); line_no += 1;
     }
     while indent_stack.len() > 1 { indent_stack.pop(); tokens.push(Token { kind: TokenKind::Dedent, line: line_no, col: 1 }); }
     tokens.push(Token { kind: TokenKind::Eof, line: line_no, col: 1 }); Ok(tokens)
@@ -122,12 +102,12 @@ pub(crate) fn lex_source(source: &str) -> Result<Vec<Token>, String> {
 // AST Nodes
 // =========================================================================
 
-#[derive(Debug, Clone, Copy, PartialEq)] pub(crate) enum Op { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, Neg, Not }
-#[derive(Debug, Clone, Copy, PartialEq)] pub(crate) enum LogicOp { And, Or }
+#[derive(Debug, Clone, Copy, PartialEq)] enum Op { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, Neg, Not }
+#[derive(Debug, Clone, Copy, PartialEq)] enum LogicOp { And, Or }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Expr {
-    NoneVal, Bool(bool), Int(i64), Float(f64), String(String), FString(String), Name(String),
+enum Expr {
+    NoneVal, Bool(bool), Int(i64), Float(f64), String(String), Name(String),
     List(Vec<Expr>), Dict(Vec<(Expr, Expr)>), Tuple(Vec<Expr>),
     ListComp(Box<Expr>, Box<Expr>, Box<Expr>, Option<Box<Expr>>), Lambda(Vec<String>, Box<Expr>),
     BinOp(Op, Box<Expr>, Box<Expr>), UnaryOp(Op, Box<Expr>), Compare(Op, Box<Expr>, Box<Expr>), Logical(LogicOp, Box<Expr>, Box<Expr>),
@@ -135,10 +115,12 @@ pub(crate) enum Expr {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum Stmt {
+enum Stmt {
     Expr(Expr), Assign(Expr, Expr), If(Expr, Vec<Stmt>, Vec<Stmt>), While(Expr, Vec<Stmt>), For(Expr, Expr, Vec<Stmt>),
-    FunctionDef(String, Vec<(String, Option<Expr>)>, Option<String>, Option<String>, Vec<Stmt>), ClassDef(String, Option<Expr>, Vec<Stmt>),
-    Try(Vec<Stmt>, Vec<(Vec<String>, Option<String>, Vec<Stmt>)>), Raise(Expr), Import(String), FromImport(String, Vec<String>),
+    // 修改: 新增 kwarg 的支援 (Option<String>)
+    FunctionDef(String, Vec<(String, Option<Expr>)>, Option<String>, Option<String>, Vec<Stmt>), 
+    ClassDef(String, Option<Expr>, Vec<Stmt>),
+    Try(Vec<Stmt>, Option<String>, Option<String>, Vec<Stmt>), Raise(Expr), Import(String), FromImport(String, Vec<String>),
     Return(Option<Expr>), Break, Continue, Pass,
 }
 
@@ -146,14 +128,16 @@ pub(crate) enum Stmt {
 // Parser
 // =========================================================================
 
-pub(crate) struct Parser<'a> { tokens: &'a [Token], pos: usize, filename: &'a str }
+struct Parser<'a> { tokens: &'a [Token], pos: usize, filename: &'a str }
 
 impl<'a> Parser<'a> {
-    pub(crate) fn new(tokens: &'a [Token], filename: &'a str) -> Self { Self { tokens, pos: 0, filename } }
+    fn new(tokens: &'a [Token], filename: &'a str) -> Self { Self { tokens, pos: 0, filename } }
     fn peek(&self) -> &Token { &self.tokens[self.pos] }
     fn prev(&self) -> &Token { &self.tokens[self.pos - 1] }
     fn match_token(&mut self, kind: &TokenKind) -> bool { if core::mem::discriminant(&self.peek().kind) == core::mem::discriminant(kind) { self.pos += 1; true } else { false } }
-    fn expect(&mut self, kind: TokenKind, msg: &str) -> Result<&Token, String> { if core::mem::discriminant(&self.peek().kind) != core::mem::discriminant(&kind) { Err(format!("{}:{}:{}: {}", self.filename, self.peek().line, self.peek().col, msg)) } else { self.pos += 1; Ok(self.prev()) } }
+    fn expect(&mut self, kind: TokenKind, msg: &str) -> Result<&Token, String> {
+        if core::mem::discriminant(&self.peek().kind) != core::mem::discriminant(&kind) { Err(format!("{}:{}:{}: {}", self.filename, self.peek().line, self.peek().col, msg)) } else { self.pos += 1; Ok(self.prev()) }
+    }
     fn skip_newlines(&mut self) { while self.match_token(&TokenKind::Newline) {} }
 
     fn parse_expr_list(&mut self) -> Result<Expr, String> {
@@ -172,9 +156,18 @@ impl<'a> Parser<'a> {
         let tok = self.peek().clone();
         let mut e = match &tok.kind {
             TokenKind::NoneVal => { self.pos += 1; Expr::NoneVal } TokenKind::TrueVal => { self.pos += 1; Expr::Bool(true) } TokenKind::FalseVal => { self.pos += 1; Expr::Bool(false) }
-            TokenKind::Int(v) => { self.pos += 1; Expr::Int(*v) } TokenKind::Float(v) => { self.pos += 1; Expr::Float(*v) } TokenKind::String(v) => { self.pos += 1; Expr::String(v.clone()) } TokenKind::FString(v) => { self.pos += 1; Expr::FString(v.clone()) } TokenKind::Name(n) => { self.pos += 1; Expr::Name(n.clone()) }
-            TokenKind::Lparen => { self.pos += 1; if self.match_token(&TokenKind::Rparen) { Expr::Tuple(vec![]) } else { let first = self.parse_expr()?; if self.match_token(&TokenKind::Comma) { let mut items = vec![first]; if self.peek().kind != TokenKind::Rparen { loop { items.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; } } } self.expect(TokenKind::Rparen, "expected ')'")?; Expr::Tuple(items) } else { self.expect(TokenKind::Rparen, "expected ')'")?; first } } }
-            TokenKind::Lbracket => { self.pos += 1; let mut items = Vec::new(); if self.match_token(&TokenKind::Rbracket) { Expr::List(vec![]) } else { let first = self.parse_expr()?; if self.match_token(&TokenKind::For) { let target = self.parse_expr_list()?; self.expect(TokenKind::In, "expected 'in'")?; let iter = self.parse_expr()?; let cond = if self.match_token(&TokenKind::If) { Some(Box::new(self.parse_expr()?)) } else { None }; self.expect(TokenKind::Rbracket, "expected ']'")?; Expr::ListComp(Box::new(first), Box::new(target), Box::new(iter), cond) } else { items.push(first); if self.match_token(&TokenKind::Comma) && self.peek().kind != TokenKind::Rbracket { loop { items.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rbracket { break; } } } self.expect(TokenKind::Rbracket, "expected ']'")?; Expr::List(items) } } }
+            TokenKind::Int(v) => { self.pos += 1; Expr::Int(*v) } TokenKind::Float(v) => { self.pos += 1; Expr::Float(*v) } TokenKind::String(v) => { self.pos += 1; Expr::String(v.clone()) } TokenKind::Name(n) => { self.pos += 1; Expr::Name(n.clone()) }
+            TokenKind::Lparen => {
+                self.pos += 1; if self.match_token(&TokenKind::Rparen) { Expr::Tuple(vec![]) } else { let first = self.parse_expr()?; if self.match_token(&TokenKind::Comma) { let mut items = vec![first]; if self.peek().kind != TokenKind::Rparen { loop { items.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; } } } self.expect(TokenKind::Rparen, "expected ')'")?; Expr::Tuple(items) } else { self.expect(TokenKind::Rparen, "expected ')'")?; first } }
+            }
+            TokenKind::Lbracket => {
+                self.pos += 1; let mut items = Vec::new();
+                if self.match_token(&TokenKind::Rbracket) { Expr::List(vec![]) } else {
+                    let first = self.parse_expr()?;
+                    if self.match_token(&TokenKind::For) { let target = self.parse_expr_list()?; self.expect(TokenKind::In, "expected 'in'")?; let iter = self.parse_expr()?; let cond = if self.match_token(&TokenKind::If) { Some(Box::new(self.parse_expr()?)) } else { None }; self.expect(TokenKind::Rbracket, "expected ']'")?; Expr::ListComp(Box::new(first), Box::new(target), Box::new(iter), cond)
+                    } else { items.push(first); if self.match_token(&TokenKind::Comma) && self.peek().kind != TokenKind::Rbracket { loop { items.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rbracket { break; } } } self.expect(TokenKind::Rbracket, "expected ']'")?; Expr::List(items) }
+                }
+            }
             TokenKind::Lbrace => { self.pos += 1; let mut pairs = Vec::new(); if !self.match_token(&TokenKind::Rbrace) { loop { let k = self.parse_expr()?; self.expect(TokenKind::Colon, "expected ':'")?; pairs.push((k, self.parse_expr()?)); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rbrace { break; } } self.expect(TokenKind::Rbrace, "expected '}'")?; } Expr::Dict(pairs) }
             _ => return Err(format!("{}:{}:{}: expected expr", self.filename, tok.line, tok.col)),
         };
@@ -187,10 +180,12 @@ impl<'a> Parser<'a> {
                 let mut args = Vec::new(); let mut kwargs = Vec::new();
                 if !self.match_token(&TokenKind::Rparen) {
                     loop {
-                        let mut is_kwarg = false; if let Some(t1) = self.tokens.get(self.pos) { if let TokenKind::Name(_) = t1.kind { if let Some(t2) = self.tokens.get(self.pos + 1) { if t2.kind == TokenKind::Equal { is_kwarg = true; } } } }
+                        let mut is_kwarg = false;
+                        if let Some(t1) = self.tokens.get(self.pos) { if let TokenKind::Name(_) = t1.kind { if let Some(t2) = self.tokens.get(self.pos + 1) { if t2.kind == TokenKind::Equal { is_kwarg = true; } } } }
                         if is_kwarg { let name = if let TokenKind::Name(n) = &self.peek().kind { n.clone() } else { unreachable!() }; self.pos += 2; kwargs.push((name, self.parse_expr()?)); } else { args.push(self.parse_expr()?); }
                         if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; }
-                    } self.expect(TokenKind::Rparen, "expected ')'")?;
+                    }
+                    self.expect(TokenKind::Rparen, "expected ')'")?;
                 } *expr = Expr::Call(Box::new(expr.clone()), args, kwargs);
             } else if self.match_token(&TokenKind::Dot) { if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected attr")?.kind { *expr = Expr::Attribute(Box::new(expr.clone()), n.clone()); }
             } else if self.match_token(&TokenKind::Lbracket) { let idx = self.parse_expr()?; self.expect(TokenKind::Rbracket, "expected ']'")?; *expr = Expr::Subscript(Box::new(expr.clone()), Box::new(idx));
@@ -205,7 +200,7 @@ impl<'a> Parser<'a> {
     fn parse_not(&mut self) -> Result<Expr, String> { if self.match_token(&TokenKind::Not) { Ok(Expr::UnaryOp(Op::Not, Box::new(self.parse_not()?))) } else { self.parse_comp() } }
     fn parse_and(&mut self) -> Result<Expr, String> { let mut e = self.parse_not()?; while self.match_token(&TokenKind::And) { e = Expr::Logical(LogicOp::And, Box::new(e), Box::new(self.parse_not()?)); } Ok(e) }
     
-    pub(crate) fn parse_expr(&mut self) -> Result<Expr, String> { 
+    fn parse_expr(&mut self) -> Result<Expr, String> { 
         if self.match_token(&TokenKind::Lambda) { let mut p = Vec::new(); if !self.match_token(&TokenKind::Colon) { loop { if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected param")?.kind { p.push(pn.clone()); } if !self.match_token(&TokenKind::Comma) { break; } } self.expect(TokenKind::Colon, "expected ':'")?; } return Ok(Expr::Lambda(p, Box::new(self.parse_expr()?))); }
         let mut e = self.parse_and()?; while self.match_token(&TokenKind::Or) { e = Expr::Logical(LogicOp::Or, Box::new(e), Box::new(self.parse_and()?)); } Ok(e) 
     }
@@ -215,30 +210,34 @@ impl<'a> Parser<'a> {
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
         if self.match_token(&TokenKind::Import) { let n = self.parse_dotted_name()?; self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::Import(n)); }
         if self.match_token(&TokenKind::From) { let mod_n = self.parse_dotted_name()?; self.expect(TokenKind::Import, "expected 'import'")?; let mut names = Vec::new(); loop { if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected name")?.kind { names.push(n.clone()); } if !self.match_token(&TokenKind::Comma) { break; } } self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::FromImport(mod_n, names)); }
+
         if self.match_token(&TokenKind::Def) {
             let n = if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected name")?.kind { n.clone() } else { unreachable!() };
-            self.expect(TokenKind::Lparen, "expected '('")?;  let mut p = Vec::new(); let mut vararg = None; let mut kwarg = None;
+            self.expect(TokenKind::Lparen, "expected '('")?;  
+            let mut p = Vec::new(); let mut vararg = None; let mut kwarg = None;
             if !self.match_token(&TokenKind::Rparen) {
                 loop {
                     if self.match_token(&TokenKind::Star) { 
-                        if self.match_token(&TokenKind::Star) { if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected kwarg name")?.kind { kwarg = Some(pn.clone()); } } else { if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected vararg name")?.kind { vararg = Some(pn.clone()); } }
-                        if self.match_token(&TokenKind::Comma) {} if self.peek().kind == TokenKind::Rparen { break; } continue; 
-                    } else if let TokenKind::Name(pn) = &self.peek().kind.clone() { self.pos += 1; let def_val = if self.match_token(&TokenKind::Equal) { Some(self.parse_expr()?) } else { None }; p.push((pn.clone(), def_val)); } else { return Err(format!("{}:{}:{}: expected parameter name", self.filename, self.peek().line, self.peek().col)); }
+                        // 解析 **kwargs 或 *args
+                        if self.match_token(&TokenKind::Star) {
+                            if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected kwarg name")?.kind { kwarg = Some(pn.clone()); }
+                        } else {
+                            if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected vararg name")?.kind { vararg = Some(pn.clone()); }
+                        }
+                        if self.match_token(&TokenKind::Comma) {} 
+                        if self.peek().kind == TokenKind::Rparen { break; }
+                        continue; 
+                    } else if let TokenKind::Name(pn) = &self.peek().kind.clone() { 
+                        self.pos += 1; let def_val = if self.match_token(&TokenKind::Equal) { Some(self.parse_expr()?) } else { None }; p.push((pn.clone(), def_val)); 
+                    } else { return Err(format!("{}:{}:{}: expected parameter name", self.filename, self.peek().line, self.peek().col)); }
                     if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; }
-                } self.expect(TokenKind::Rparen, "expected ')'")?;
-            } self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::FunctionDef(n, p, vararg, kwarg, self.parse_block()?));
+                }
+                self.expect(TokenKind::Rparen, "expected ')'")?;
+            }
+            self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::FunctionDef(n, p, vararg, kwarg, self.parse_block()?));
         }
         if self.match_token(&TokenKind::Class) { let n = if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected class name")?.kind { n.clone() } else { unreachable!() }; let mut base_expr = None; if self.match_token(&TokenKind::Lparen) { base_expr = Some(self.parse_expr()?); self.expect(TokenKind::Rparen, "expected ')'")?; } self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::ClassDef(n, base_expr, self.parse_block()?)); }
-        if self.match_token(&TokenKind::Try) {
-            self.expect(TokenKind::Colon, "expected ':'")?; let body = self.parse_block()?; self.skip_newlines(); let mut handlers = Vec::new();
-            while self.match_token(&TokenKind::Except) {
-                let mut exc_types = Vec::new(); let mut exc_as = None;
-                if self.match_token(&TokenKind::Lparen) { loop { if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected exc name")?.kind { exc_types.push(n.clone()); } if !self.match_token(&TokenKind::Comma) { break; } } self.expect(TokenKind::Rparen, "expected ')'")?; } else if let TokenKind::Name(n) = &self.peek().kind.clone() { exc_types.push(n.clone()); self.pos += 1; }
-                if !exc_types.is_empty() && self.match_token(&TokenKind::As) { if let TokenKind::Name(a) = &self.expect(TokenKind::Name("".into()), "expected var")?.kind { exc_as = Some(a.clone()); } }
-                self.expect(TokenKind::Colon, "expected ':'")?; handlers.push((exc_types, exc_as, self.parse_block()?)); self.skip_newlines();
-            }
-            if handlers.is_empty() { return Err("expected 'except' block".into()); } return Ok(Stmt::Try(body, handlers));
-        }
+        if self.match_token(&TokenKind::Try) { self.expect(TokenKind::Colon, "expected ':'")?; let body = self.parse_block()?; self.skip_newlines(); self.expect(TokenKind::Except, "expected 'except'")?; let mut exc_type = None; let mut exc_as = None; if let TokenKind::Name(n) = &self.peek().kind { exc_type = Some(n.clone()); self.pos += 1; if self.match_token(&TokenKind::As) { if let TokenKind::Name(a) = &self.expect(TokenKind::Name("".into()), "expected var")?.kind { exc_as = Some(a.clone()); } } } self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::Try(body, exc_type, exc_as, self.parse_block()?)); }
         if self.match_token(&TokenKind::Raise) { let e = self.parse_expr()?; self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::Raise(e)); }
         if self.match_token(&TokenKind::If) { let test = self.parse_expr()?; self.expect(TokenKind::Colon, "expected ':'")?; let body = self.parse_block()?; self.skip_newlines(); let mut elifs = Vec::new(); while self.match_token(&TokenKind::Elif) { let t = self.parse_expr()?; self.expect(TokenKind::Colon, "expected ':'")?; elifs.push((t, self.parse_block()?)); self.skip_newlines(); } let mut els = if self.match_token(&TokenKind::Else) { self.expect(TokenKind::Colon, "expected ':'")?; self.parse_block()? } else { vec![] }; for (t, b) in elifs.into_iter().rev() { els = vec![Stmt::If(t, b, els)]; } return Ok(Stmt::If(test, body, els)); }
         if self.match_token(&TokenKind::While) { let test = self.parse_expr()?; self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::While(test, self.parse_block()?)); }
@@ -258,7 +257,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(TokenKind::Newline, "expected newline")?; Ok(Stmt::Expr(expr))
     }
-    pub(crate) fn parse_module(&mut self) -> Result<Vec<Stmt>, String> { let mut b = Vec::new(); self.skip_newlines(); while self.peek().kind != TokenKind::Eof { b.push(self.parse_stmt()?); self.skip_newlines(); } Ok(b) }
+    fn parse_module(&mut self) -> Result<Vec<Stmt>, String> { let mut b = Vec::new(); self.skip_newlines(); while self.peek().kind != TokenKind::Eof { b.push(self.parse_stmt()?); self.skip_newlines(); } Ok(b) }
 }
 
 // =========================================================================
@@ -266,7 +265,7 @@ impl<'a> Parser<'a> {
 // =========================================================================
 
 #[derive(Clone)]
-pub(crate) enum PyValue {
+enum PyValue {
     None, Bool(bool), Int(i64), Float(f64), Str(String),
     Tuple(Vec<PyValue>), List(Rc<RefCell<Vec<PyValue>>>), Dict(Rc<RefCell<HashMap<String, PyValue>>>),
     Function { name: String, params: Vec<String>, defaults: HashMap<String, PyValue>, vararg: Option<String>, kwarg: Option<String>, body: Rc<Vec<Stmt>>, closure: Rc<RefCell<Env>> },
@@ -294,22 +293,22 @@ impl fmt::Display for PyValue {
     }
 }
 
-pub(crate) fn py_err<T>(typ: &str, msg: &str) -> Result<T, PyValue> { Err(PyValue::Exception(typ.to_string(), Box::new(PyValue::Str(msg.to_string())))) }
-pub(crate) fn py_err_val(typ: &str, msg: &str) -> PyValue { PyValue::Exception(typ.to_string(), Box::new(PyValue::Str(msg.to_string()))) }
+fn py_err<T>(typ: &str, msg: &str) -> Result<T, PyValue> { Err(PyValue::Exception(typ.to_string(), Box::new(PyValue::Str(msg.to_string())))) }
+fn py_err_val(typ: &str, msg: &str) -> PyValue { PyValue::Exception(typ.to_string(), Box::new(PyValue::Str(msg.to_string()))) }
 fn get_class_method(class_val: &PyValue, method_name: &str) -> Option<PyValue> { if let PyValue::Class { methods, base, .. } = class_val { if let Some(m) = methods.get(method_name) { return Some(m.clone()); } if let Some(b) = base { return get_class_method(b, method_name); } } None }
-pub(crate) fn py_to_string(rt: &mut Runtime, val: PyValue) -> Result<String, PyValue> { if let PyValue::Instance { class_val, .. } = &val { if let Some(m) = get_class_method(class_val, "__str__") { let bound = PyValue::BoundMethod { receiver: Box::new(val.clone()), func: Box::new(m) }; let res = call_func(rt, bound, vec![], HashMap::new())?; if let PyValue::Str(s) = res { return Ok(s); } } } Ok(val.to_string()) }
+fn py_to_string(rt: &mut Runtime, val: PyValue) -> Result<String, PyValue> { if let PyValue::Instance { class_val, .. } = &val { if let Some(m) = get_class_method(class_val, "__str__") { let bound = PyValue::BoundMethod { receiver: Box::new(val.clone()), func: Box::new(m) }; let res = call_func(rt, bound, vec![], HashMap::new())?; if let PyValue::Str(s) = res { return Ok(s); } } } Ok(val.to_string()) }
 
 impl PyValue {
     fn is_truthy(&self) -> bool { match self { PyValue::None => false, PyValue::Bool(b) => *b, PyValue::Int(i) => *i != 0, PyValue::Float(f) => *f != 0.0, PyValue::Str(s) => !s.is_empty(), PyValue::Tuple(t) => !t.is_empty(), PyValue::List(l) => !l.borrow().is_empty(), PyValue::Dict(d) => !d.borrow().is_empty(), _ => true, } }
-    pub(crate) fn as_num(&self) -> Result<f64, PyValue> { match self { PyValue::Int(i) => Ok(*i as f64), PyValue::Float(f) => Ok(*f), PyValue::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }), _ => py_err("TypeError", "expected number") } }
-    pub(crate) fn as_key(&self) -> Result<String, PyValue> { match self { PyValue::Str(s) => Ok(s.clone()), PyValue::Int(i) => Ok(i.to_string()), _ => py_err("TypeError", "unhashable type") } }
+    fn as_num(&self) -> Result<f64, PyValue> { match self { PyValue::Int(i) => Ok(*i as f64), PyValue::Float(f) => Ok(*f), PyValue::Bool(b) => Ok(if *b { 1.0 } else { 0.0 }), _ => py_err("TypeError", "expected number") } }
+    fn as_key(&self) -> Result<String, PyValue> { match self { PyValue::Str(s) => Ok(s.clone()), PyValue::Int(i) => Ok(i.to_string()), _ => py_err("TypeError", "unhashable type") } }
 }
 
-pub(crate) struct Env { parent: Option<Rc<RefCell<Env>>>, vars: HashMap<String, PyValue> }
+struct Env { parent: Option<Rc<RefCell<Env>>>, vars: HashMap<String, PyValue> }
 impl Env {
-    pub(crate) fn new(parent: Option<Rc<RefCell<Env>>>) -> Rc<RefCell<Self>> { Rc::new(RefCell::new(Env { parent, vars: HashMap::new() })) }
-    pub(crate) fn set(&mut self, n: &str, v: PyValue) { self.vars.insert(n.to_string(), v); }
-    pub(crate) fn assign(&mut self, n: &str, v: PyValue) { if self.vars.contains_key(n) { self.vars.insert(n.to_string(), v); return; } if let Some(p) = &self.parent { if p.borrow().get_opt(n).is_some() { p.borrow_mut().assign(n, v); return; } } self.vars.insert(n.to_string(), v); }
+    fn new(parent: Option<Rc<RefCell<Env>>>) -> Rc<RefCell<Self>> { Rc::new(RefCell::new(Env { parent, vars: HashMap::new() })) }
+    fn set(&mut self, n: &str, v: PyValue) { self.vars.insert(n.to_string(), v); }
+    fn assign(&mut self, n: &str, v: PyValue) { if self.vars.contains_key(n) { self.vars.insert(n.to_string(), v); return; } if let Some(p) = &self.parent { if p.borrow().get_opt(n).is_some() { p.borrow_mut().assign(n, v); return; } } self.vars.insert(n.to_string(), v); }
     fn get_opt(&self, n: &str) -> Option<PyValue> { if let Some(v) = self.vars.get(n) { Some(v.clone()) } else if let Some(p) = &self.parent { p.borrow().get_opt(n) } else { None } }
     fn get(&self, n: &str) -> Result<PyValue, PyValue> { self.get_opt(n).ok_or_else(|| py_err_val("NameError", &format!("name '{}' is not defined", n))) }
 }
@@ -318,18 +317,11 @@ impl Env {
 // Evaluator & Module Loader
 // =========================================================================
 
-pub(crate) struct Runtime { sys_modules: HashMap<String, PyValue> }
+struct Runtime { sys_modules: HashMap<String, PyValue> }
 enum ExecStatus { Continue, Return(PyValue), Break, ContinueLoop }
 
 fn load_module(rt: &mut Runtime, name: &str) -> Result<PyValue, PyValue> {
     if let Some(m) = rt.sys_modules.get(name) { return Ok(m.clone()); }
-
-    // --- 使用分離出來的 stdlib (lib4.rs) ---
-    if let Some(native_module) = lib4::load_native_module(name) {
-        rt.sys_modules.insert(name.to_string(), native_module.clone());
-        return Ok(native_module);
-    }
-
     let path_base = name.replace('.', "/"); let file_path = format!("{}.py", path_base); let pkg_path = format!("{}/__init__.py", path_base);
     let (path, src) = if let Ok(s) = fs::read_to_string(&file_path) { (file_path, s) } else if let Ok(s) = fs::read_to_string(&pkg_path) { (pkg_path, s) } else { return py_err("ImportError", &format!("No module named '{}'", name)); };
     let tokens = lex_source(&src).map_err(|e| py_err_val("SyntaxError", &e))?; let mut parser = Parser::new(&tokens, &path); let ast = parser.parse_module().map_err(|e| py_err_val("SyntaxError", &e))?;
@@ -363,15 +355,19 @@ fn assign_target(rt: &mut Runtime, env: &Rc<RefCell<Env>>, target: &Expr, val: P
     }
 }
 
-pub(crate) fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -> Result<PyValue, PyValue> {
+fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -> Result<PyValue, PyValue> {
     match expr {
         Expr::NoneVal => Ok(PyValue::None), Expr::Bool(b) => Ok(PyValue::Bool(*b)), Expr::Int(v) => Ok(PyValue::Int(*v)), Expr::Float(v) => Ok(PyValue::Float(*v)), Expr::String(v) => Ok(PyValue::Str(v.clone())), Expr::Name(n) => env.borrow().get(n),
-        Expr::FString(s) => { let mut res = String::new(); let mut chars = s.chars().peekable(); while let Some(c) = chars.next() { if c == '{' { let mut expr_str = String::new(); while let Some(&next_c) = chars.peek() { if next_c == '}' { chars.next(); break; } expr_str.push(chars.next().unwrap()); } let toks = lex_source(&expr_str).map_err(|e| py_err_val("SyntaxError", &e))?; let mut p = Parser::new(&toks, "<fstring>"); let e = p.parse_expr().map_err(|e| py_err_val("SyntaxError", &e))?; let v = eval_expr(rt, env, &e)?; res.push_str(&py_to_string(rt, v)?); } else { res.push(c); } } Ok(PyValue::Str(res)) }
         Expr::Tuple(items) => { let mut t = vec![]; for i in items { t.push(eval_expr(rt, env, i)?); } Ok(PyValue::Tuple(t)) }
         Expr::List(items) => { let mut l = vec![]; for i in items { l.push(eval_expr(rt, env, i)?); } Ok(PyValue::List(Rc::new(RefCell::new(l)))) }
         Expr::Dict(pairs) => { let mut d = HashMap::new(); for (k, v) in pairs { d.insert(eval_expr(rt, env, k)?.as_key()?, eval_expr(rt, env, v)?); } Ok(PyValue::Dict(Rc::new(RefCell::new(d)))) }
         Expr::Lambda(params, body_expr) => Ok(PyValue::Function { name: "<lambda>".into(), params: params.clone(), defaults: HashMap::new(), vararg: None, kwarg: None, body: Rc::new(vec![Stmt::Return(Some(*body_expr.clone()))]), closure: Rc::clone(env) }),
-        Expr::ListComp(exp, target, iter, cond) => { let it = eval_expr(rt, env, iter)?; let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "not iterable") }; let mut res = Vec::new(); let loc = Env::new(Some(Rc::clone(env))); for item in items { assign_target(rt, &loc, target, item)?; let ok = if let Some(c) = cond { eval_expr(rt, &loc, c)?.is_truthy() } else { true }; if ok { res.push(eval_expr(rt, &loc, exp)?); } } Ok(PyValue::List(Rc::new(RefCell::new(res)))) }
+        Expr::ListComp(exp, target, iter, cond) => {
+            let it = eval_expr(rt, env, iter)?; let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "not iterable") };
+            let mut res = Vec::new(); let loc = Env::new(Some(Rc::clone(env)));
+            for item in items { assign_target(rt, &loc, target, item)?; let ok = if let Some(c) = cond { eval_expr(rt, &loc, c)?.is_truthy() } else { true }; if ok { res.push(eval_expr(rt, &loc, exp)?); } }
+            Ok(PyValue::List(Rc::new(RefCell::new(res))))
+        }
         Expr::BinOp(op, l, r) => { let left_val = eval_expr(rt, env, l)?; let right_val = eval_expr(rt, env, r)?; apply_binop(rt, env, *op, left_val, right_val) }
         Expr::UnaryOp(op, operand) => { let v = eval_expr(rt, env, operand)?; match op { Op::Neg => match v { PyValue::Int(i) => Ok(PyValue::Int(-i)), _ => Ok(PyValue::Float(-v.as_num()?)) }, Op::Not => Ok(PyValue::Bool(!v.is_truthy())), _ => py_err("TypeError", "bad unary op") } }
         Expr::Compare(op, l, r) => { let left_val = eval_expr(rt, env, l)?; let right_val = eval_expr(rt, env, r)?; apply_comp(rt, env, *op, left_val, right_val) }
@@ -382,7 +378,10 @@ pub(crate) fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -
             match &o {
                 PyValue::Module(_, mod_env) => { mod_env.borrow().get(attr) }
                 PyValue::Instance { class_val, attrs } => { if let Some(v) = attrs.borrow().get(attr) { return Ok(v.clone()); } if let Some(m) = get_class_method(class_val, attr) { return Ok(PyValue::BoundMethod { receiver: Box::new(o.clone()), func: Box::new(m) }); } py_err("AttributeError", &format!("object has no attribute '{}'", attr)) }
-                PyValue::Class { name, .. } => { if let Some(m) = get_class_method(&o, attr) { Ok(m) } else { py_err("AttributeError", &format!("type object '{}' has no attribute '{}'", name, attr)) } }
+                // --- 修改: 從 Class 物件中尋找屬性/方法 ---
+                PyValue::Class { name, .. } => {
+                    if let Some(m) = get_class_method(&o, attr) { Ok(m) } else { py_err("AttributeError", &format!("type object '{}' has no attribute '{}'", name, attr)) }
+                }
                 PyValue::List(_) | PyValue::Dict(_) | PyValue::Str(_) | PyValue::File(_) => Ok(PyValue::Method(Box::new(o.clone()), attr.clone())), _ => py_err("AttributeError", "object has no attribute")
             }
         }
@@ -419,7 +418,7 @@ fn exec_stmt(rt: &mut Runtime, env: &Rc<RefCell<Env>>, stmt: &Stmt) -> Result<Ex
         Stmt::For(target, iter_expr, b) => { let it = eval_expr(rt, env, iter_expr)?; let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "object is not iterable") }; for item in items { assign_target(rt, env, target, item)?; match exec_block(rt, env, b)? { ExecStatus::Return(ret) => return Ok(ExecStatus::Return(ret)), ExecStatus::Break => break, _ => {} } } Ok(ExecStatus::Continue) }
         Stmt::FunctionDef(n, p, vararg, kwarg, b) => { let mut params = Vec::new(); let mut defaults = HashMap::new(); for (p_name, p_def) in p { params.push(p_name.clone()); if let Some(def_expr) = p_def { defaults.insert(p_name.clone(), eval_expr(rt, env, def_expr)?); } } env.borrow_mut().set(n, PyValue::Function { name: n.clone(), params, defaults, vararg: vararg.clone(), kwarg: kwarg.clone(), body: Rc::new(b.clone()), closure: Rc::clone(env) }); Ok(ExecStatus::Continue) }
         Stmt::ClassDef(n, base_expr, b) => { let base_val = if let Some(expr) = base_expr { let v = eval_expr(rt, env, expr)?; if !matches!(v, PyValue::Class { .. }) { return py_err("TypeError", "base is not a class"); } Some(Box::new(v)) } else { None }; let class_env = Env::new(Some(Rc::clone(env))); exec_block(rt, &class_env, b)?; let methods = class_env.borrow().vars.clone(); env.borrow_mut().set(n, PyValue::Class { name: n.clone(), base: base_val, methods: Rc::new(methods) }); Ok(ExecStatus::Continue) }
-        Stmt::Try(body, handlers) => { match exec_block(rt, env, body) { Err(exc) => { for (exc_types, exc_as, except_body) in handlers { let should_catch = if exc_types.is_empty() { true } else { if let PyValue::Exception(exc_t, _) = &exc { exc_types.contains(&"Exception".to_string()) || exc_types.contains(exc_t) } else { false } }; if should_catch { let except_env = Env::new(Some(Rc::clone(env))); if let Some(var) = exc_as { except_env.borrow_mut().set(var, exc); } return exec_block(rt, &except_env, except_body); } } Err(exc) } Ok(status) => Ok(status) } }
+        Stmt::Try(body, _exc_type, exc_as, except_body) => { match exec_block(rt, env, body) { Err(exc) => { let should_catch = match _exc_type { Some(ref t) => { if let PyValue::Exception(exc_t, _) = &exc { t == "Exception" || exc_t == t } else { false } }, None => true }; if should_catch { let except_env = Env::new(Some(Rc::clone(env))); if let Some(var) = exc_as { except_env.borrow_mut().set(&var, exc); } exec_block(rt, &except_env, except_body) } else { Err(exc) } } Ok(status) => Ok(status) } }
         Stmt::Raise(e) => { Err(eval_expr(rt, env, e)?) }
         Stmt::Import(mod_name) => { let module = load_module(rt, mod_name)?; let bind_name = mod_name.split('.').last().unwrap(); env.borrow_mut().assign(bind_name, module); Ok(ExecStatus::Continue) }
         Stmt::FromImport(mod_name, names) => { let module = load_module(rt, mod_name)?; if let PyValue::Module(_, mod_env) = module { for n in names { let val = mod_env.borrow().get(n)?; env.borrow_mut().assign(n, val); } } Ok(ExecStatus::Continue) }
@@ -454,9 +453,18 @@ fn call_func(rt: &mut Runtime, func: PyValue, args: Vec<PyValue>, kwargs: HashMa
             let local = Env::new(Some(closure)); let mut arg_idx = 0; let mut bound_params = std::collections::HashSet::new();
             for arg_val in args.iter() { if arg_idx < params.len() { let p_name = &params[arg_idx]; local.borrow_mut().set(p_name, arg_val.clone()); bound_params.insert(p_name.clone()); arg_idx += 1; } else { break; } }
             if let Some(vname) = &vararg { let rest = args[arg_idx..].to_vec(); local.borrow_mut().set(vname, PyValue::Tuple(rest)); } else if arg_idx < args.len() { return py_err("TypeError", &format!("{}() takes {} positional arguments but {} were given", name, params.len(), args.len())); }
+            
+            // --- 處理 kwargs 與 **kwargs ---
             let mut leftover_kwargs = HashMap::new();
-            for (k_name, k_val) in kwargs { if params.contains(&k_name) { if bound_params.contains(&k_name) { return py_err("TypeError", &format!("{}() got multiple values for argument '{}'", name, k_name)); } local.borrow_mut().set(&k_name, k_val); bound_params.insert(k_name.clone()); } else { leftover_kwargs.insert(k_name, k_val); } }
-            if let Some(kw_name) = &kwarg { local.borrow_mut().set(kw_name, PyValue::Dict(Rc::new(RefCell::new(leftover_kwargs)))); } else if !leftover_kwargs.is_empty() { let bad_key = leftover_kwargs.keys().next().unwrap(); return py_err("TypeError", &format!("{}() got an unexpected keyword argument '{}'", name, bad_key)); }
+            for (k_name, k_val) in kwargs {
+                if params.contains(&k_name) {
+                    if bound_params.contains(&k_name) { return py_err("TypeError", &format!("{}() got multiple values for argument '{}'", name, k_name)); }
+                    local.borrow_mut().set(&k_name, k_val); bound_params.insert(k_name.clone());
+                } else { leftover_kwargs.insert(k_name, k_val); }
+            }
+            if let Some(kw_name) = &kwarg { local.borrow_mut().set(kw_name, PyValue::Dict(Rc::new(RefCell::new(leftover_kwargs)))); } 
+            else if !leftover_kwargs.is_empty() { let bad_key = leftover_kwargs.keys().next().unwrap(); return py_err("TypeError", &format!("{}() got an unexpected keyword argument '{}'", name, bad_key)); }
+            
             for p_name in params.iter() { if !bound_params.contains(p_name) { if let Some(def_val) = defaults.get(p_name) { local.borrow_mut().set(p_name, def_val.clone()); } else { return py_err("TypeError", &format!("{}() missing required argument: '{}'", name, p_name)); } } }
             match exec_block(rt, &local, &body)? { ExecStatus::Return(v) => Ok(v), _ => Ok(PyValue::None) }
         }
@@ -464,23 +472,51 @@ fn call_func(rt: &mut Runtime, func: PyValue, args: Vec<PyValue>, kwargs: HashMa
     }
 }
 
+// =========================================================================
+// Builtins & Main
+// =========================================================================
+
 fn install_builtins(globals: &Rc<RefCell<Env>>) {
     let mut e = globals.borrow_mut();
     e.set("print", PyValue::Builtin("print".into(), Rc::new(|rt, a, _kw| { let mut out = Vec::new(); for val in a { out.push(py_to_string(rt, val.clone())?); } println!("{}", out.join(" ")); Ok(PyValue::None) })));
     e.set("str", PyValue::Builtin("str".into(), Rc::new(|rt, a, _kw| { if a.len() != 1 { return py_err("TypeError", "str() takes exactly one argument"); } Ok(PyValue::Str(py_to_string(rt, a[0].clone())?)) })));
     e.set("len", PyValue::Builtin("len".into(), Rc::new(|_, a, _kw| { if a.is_empty() { return py_err("TypeError", "len() takes exactly one argument (0 given)"); } match &a[0] { PyValue::Str(s) => Ok(PyValue::Int(s.len() as i64)), PyValue::List(l) => Ok(PyValue::Int(l.borrow().len() as i64)), PyValue::Tuple(t) => Ok(PyValue::Int(t.len() as i64)), PyValue::Dict(d) => Ok(PyValue::Int(d.borrow().len() as i64)), _ => py_err("TypeError", "object has no len()") } })));
     e.set("range", PyValue::Builtin("range".into(), Rc::new(|_, a, _kw| { if a.is_empty() { return py_err("TypeError", "range expected 1 argument, got 0"); } let end = match a[0] { PyValue::Int(i) => i, _ => return py_err("TypeError", "range() integer argument expected") }; Ok(PyValue::List(Rc::new(RefCell::new((0..end).map(PyValue::Int).collect())))) })));
+    e.set("Exception", PyValue::Builtin("Exception".into(), Rc::new(|_, a, _kw| { let arg = a.get(0).cloned().unwrap_or(PyValue::None); Ok(PyValue::Exception("Exception".into(), Box::new(arg))) })));
     e.set("open", PyValue::Builtin("open".into(), Rc::new(|_, a, _kw| { if a.is_empty() { return py_err("TypeError", "open() expected at least 1 argument"); } let path = if let PyValue::Str(s) = &a[0] { s } else { return py_err("TypeError", "expected string as path"); }; let mode = if a.len() > 1 { if let PyValue::Str(s) = &a[1] { s.clone() } else { return py_err("TypeError", "expected string as mode"); } } else { "r".to_string() }; let mut opts = OpenOptions::new(); match mode.as_str() { "r" => opts.read(true), "w" => opts.write(true).create(true).truncate(true), "a" => opts.write(true).create(true).append(true), _ => return py_err("ValueError", "invalid mode"), }; let file = opts.open(path).map_err(|err| py_err_val("IOError", &err.to_string()))?; Ok(PyValue::File(Rc::new(RefCell::new(Some(file))))) })));
-    e.set("type", PyValue::Builtin("type".into(), Rc::new(|_, a, _| { if a.len() != 1 { return py_err("TypeError", "type() takes 1 argument"); } let type_name = match &a[0] { PyValue::Int(_) => "int", PyValue::Float(_) => "float", PyValue::Str(_) => "str", PyValue::Bool(_) => "bool", PyValue::List(_) => "list", PyValue::Dict(_) => "dict", PyValue::Tuple(_) => "tuple", PyValue::None => "NoneType", PyValue::Instance { class_val, .. } => if let PyValue::Class { name, .. } = &**class_val { name } else { "object" }, PyValue::Class { .. } => "type", PyValue::Function { .. } | PyValue::Builtin(..) | PyValue::BoundMethod { .. } | PyValue::Method(..) => "function", _ => "object", }; Ok(PyValue::Str(format!("<class '{}'>", type_name))) })));
-    e.set("isinstance", PyValue::Builtin("isinstance".into(), Rc::new(|_, a, _| { if a.len() != 2 { return py_err("TypeError", "isinstance expected 2 arguments"); } let (obj, cls) = (&a[0], &a[1]); if let PyValue::Class { name: target_name, .. } = cls { if let PyValue::Instance { class_val, .. } = obj { fn check_class(c: &PyValue, target: &str) -> bool { if let PyValue::Class { name, base, .. } = c { if name == target { return true; } if let Some(b) = base { return check_class(b, target); } } false } Ok(PyValue::Bool(check_class(class_val, target_name))) } else { Ok(PyValue::Bool(false)) } } else { py_err("TypeError", "isinstance() arg 2 must be a type") } })));
+    
+    // --- 新增: 內省函數 type() ---
+    e.set("type", PyValue::Builtin("type".into(), Rc::new(|_, a, _| {
+        if a.len() != 1 { return py_err("TypeError", "type() takes 1 argument"); }
+        let type_name = match &a[0] {
+            PyValue::Int(_) => "int", PyValue::Float(_) => "float", PyValue::Str(_) => "str", PyValue::Bool(_) => "bool", PyValue::List(_) => "list", PyValue::Dict(_) => "dict", PyValue::Tuple(_) => "tuple", PyValue::None => "NoneType",
+            PyValue::Instance { class_val, .. } => if let PyValue::Class { name, .. } = &**class_val { name } else { "object" },
+            PyValue::Class { .. } => "type", PyValue::Function { .. } | PyValue::Builtin(..) | PyValue::BoundMethod { .. } | PyValue::Method(..) => "function",
+            _ => "object",
+        };
+        Ok(PyValue::Str(format!("<class '{}'>", type_name)))
+    })));
 
-    let exc_types = ["Exception", "TypeError", "ValueError", "NameError", "IndexError", "AttributeError", "KeyError", "IOError", "ImportError", "ZeroDivisionError", "SyntaxError"];
-    for exc in exc_types { let name = exc.to_string(); e.set(exc, PyValue::Builtin(name.clone(), Rc::new(move |_, a, _| { let arg = a.get(0).cloned().unwrap_or(PyValue::None); Ok(PyValue::Exception(name.clone(), Box::new(arg))) }))); }
+    // --- 新增: 內省函數 isinstance() ---
+    e.set("isinstance", PyValue::Builtin("isinstance".into(), Rc::new(|_, a, _| {
+        if a.len() != 2 { return py_err("TypeError", "isinstance expected 2 arguments"); }
+        let (obj, cls) = (&a[0], &a[1]);
+        if let PyValue::Class { name: target_name, .. } = cls {
+            if let PyValue::Instance { class_val, .. } = obj {
+                fn check_class(c: &PyValue, target: &str) -> bool {
+                    if let PyValue::Class { name, base, .. } = c {
+                        if name == target { return true; } if let Some(b) = base { return check_class(b, target); }
+                    } false
+                }
+                Ok(PyValue::Bool(check_class(class_val, target_name)))
+            } else { Ok(PyValue::Bool(false)) }
+        } else { py_err("TypeError", "isinstance() arg 2 must be a type") }
+    })));
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 { eprintln!("Usage: ./py4 <script.py> [args...]"); process::exit(1); }
+    if args.len() < 2 { eprintln!("Usage: ./py4 <script.py>"); process::exit(1); }
     let src = fs::read_to_string(&args[1]).unwrap_or_else(|_| { eprintln!("cannot open {}", args[1]); process::exit(1); });
 
     let globals = Env::new(None); install_builtins(&globals);

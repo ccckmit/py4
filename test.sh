@@ -9,4 +9,9 @@ rustc py4.rs
 ./py4 py/io.py
 ./py4 py/inherit.py
 #./py4 py/decorator.py
-#./py4 py/args.py
+./py4 py/args.py
+./py4 py/unpack.py
+./py4 py/adv_oop.py
+./py4 py/modern.py
+./py4 py/test_stdlib.py
+

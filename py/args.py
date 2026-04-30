@@ -1,64 +1,66 @@
-print("=== 1. 測試字串與陣列切片 (Slicing) ===")
-text = "Hello, Python and Rust!"
-print(f"Original text: '{text}'")
-print(f"text[7:13]      -> '{text[7:13]}'")      # 擷取 'Python'
-print(f"text[:5]        -> '{text[:5]}'")        # 擷取 'Hello'
-print(f"text[-5:-1]     -> '{text[-5:-1]}'")     # 擷取 'Rust' (支援負數索引)
-print(f"text[::-1]      -> '{text[::-1]}'")      # 字串反轉！(step=-1)
+# ==========================
+# 測試 1: 預設參數 (Default Arguments)
+# ==========================
+print("--- 1. Default Arguments ---")
+def greet(name, msg="Hello", punct="!"):
+    print(msg + ", " + name + punct)
+    
+greet("Alice")                     # 使用所有預設值
+greet("Bob", "Hi")                 # 覆蓋第一個預設值
+greet("Charlie", "Welcome", "!!")  # 覆蓋所有預設值
 
-arr = [0, 10, 20, 30, 40, 50, 60]
-print(f"\nOriginal array: {arr}")
-print(f"arr[1:5:2]      -> {arr[1:5:2]}")        # 擷取 [10, 30] (step=2)
-print(f"arr[::-1]       -> {arr[::-1]}")         # 陣列反轉！
+# ==========================
+# 測試 2: 關鍵字參數 (Keyword Arguments)
+# ==========================
+print("\n--- 2. Keyword Arguments ---")
+def describe_person(name, age=20, city="Taipei"):
+    print(name, "is", age, "years old, lives in", city)
 
+describe_person("David", city="Tainan")           # 位置參數 + 關鍵字參數
+describe_person(age=35, name="Eve")               # 全關鍵字參數 (順序可以不同)
+describe_person(city="Kaohsiung", name="Frank")   # 混用與預設值填補
 
-print("\n=== 2. 測試預設參數 (Default Arguments) ===")
-def greet(name, greeting="Hello", punctuation="!"):
-    return f"{greeting}, {name}{punctuation}"
-
-print("greet('Alice')                     ->", greet("Alice"))
-# 注意：目前我們的架構還不支援呼叫時使用 Keyword arguments (greet(name="Alice"))
-# 但支援依照順序覆蓋預設值
-print("greet('Bob', 'Hi')                 ->", greet("Bob", "Hi"))
-print("greet('Charlie', 'Welcome', '...') ->", greet("Charlie", "Welcome", "..."))
-
-
-print("\n=== 3. 測試不定長度參數 (*args) ===")
-def sum_all(first, *rest):
+# ==========================
+# 測試 3: 不定長度參數 (*args)
+# ==========================
+print("\n--- 3. Variable-Length Arguments (*args) ---")
+def sum_all(first, *args):
     total = first
-    for num in rest:
-        total += num
-    return f"First: {first}, Rest: {rest}, Total Sum: {total}"
+    for n in args:
+        total += n
+    return total
 
-print("sum_all(10, 20, 30, 40) ->")
-print("  " + sum_all(10, 20, 30, 40))
+print("Sum (10):", sum_all(10))                               # 沒有額外的 args
+print("Sum (10, 20, 30):", sum_all(10, 20, 30))               # 多個 args
+print("Sum (1, 2, 3, 4, 5):", sum_all(1, 2, 3, 4, 5))         # 更多 args
 
-print("\nsum_all(100) ->")
-print("  " + sum_all(100)) # rest 應該要是空 Tuple ()
+# ==========================
+# 測試 4: 綜合測試 (Positional + Default + *args + Kwargs)
+# ==========================
+print("\n--- 4. Mixed Test ---")
+def mixed_test(a, b=2, *args):
+    print("a:", a, "| b:", b, "| args:", args)
 
+mixed_test(1)                        # a=1, b=2 (default), args=()
+mixed_test(1, 5)                     # a=1, b=5, args=()
+mixed_test(1, 5, 10, 11, 12)         # a=1, b=5, args=(10, 11, 12)
+mixed_test(a=100, b=200)             # 完全使用 keyword
 
-print("\n=== 4. 測試多重賦值與交換變數 (Tuple Unpacking) ===")
-a, b, c = 1, 2, 3
-print(f"Before: a={a}, b={b}, c={c}")
+# ==========================
+# 測試 5: 錯誤處理 (Error Handling)
+# ==========================
+print("\n--- 5. Error Catching ---")
+try:
+    describe_person() # 缺少 required 的 name
+except Exception as e:
+    print("Caught:", e)
 
-# 經典的 Python 變數交換
-a, b, c = c, a, b
-print(f"After swap (c, a, b): a={a}, b={b}, c={c}")
+try:
+    describe_person("Alice", unknown="???") # 丟入未知的 keyword
+except Exception as e:
+    print("Caught:", e)
 
-
-print("\n=== 5. 測試裝飾器與 *args 組合 (Decorator) ===")
-# 寫一個可以印出參數的日誌裝飾器
-def logger(func):
-    def wrapper(*args):
-        print(f"[LOG] Calling function with args: {args}")
-        return func(*args) # 解構 *args 呼叫尚未支援，目前只能傳遞 Tuple，這是一個妥協寫法
-    return wrapper
-
-@logger
-def multiply(nums):
-    # 因為目前不支援解構呼叫 func(*args)，我們接收一個 tuple
-    a, b = nums[0], nums[1]
-    return a * b
-
-result = multiply( (5, 6) )
-print(f"Result: {result}")
+try:
+    describe_person("Alice", name="Alice2") # 給予多重值 (positional 已經佔了 name)
+except Exception as e:
+    print("Caught:", e)

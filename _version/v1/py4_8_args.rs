@@ -21,7 +21,7 @@ enum TokenKind {
     Import, From,
     Lparen, Rparen, Lbracket, Rbracket, Lbrace, Rbrace,
     Comma, Colon, Dot, Plus, Minus, Star, Slash, Percent,
-    Equal, PlusEq, MinusEq, Eqeq, Ne, Lt, Le, Gt, Ge, At, // <--- 新增 @ (At)
+    Equal, PlusEq, MinusEq, Eqeq, Ne, Lt, Le, Gt, Ge,
 }
 
 #[derive(Debug, Clone)]
@@ -55,23 +55,6 @@ fn lex_source(source: &str) -> Result<Vec<Token>, String> {
                     "as" => TokenKind::As, "and" => TokenKind::And, "or" => TokenKind::Or, "not" => TokenKind::Not,
                     "None" => TokenKind::NoneVal, "True" => TokenKind::TrueVal, "False" => TokenKind::FalseVal,
                     "lambda" => TokenKind::Lambda, "import" => TokenKind::Import, "from" => TokenKind::From,
-                    // --- 支援 f-string 偷吃步：如果遇到以 f 開頭的字串，我們在下面字串解析特判 ---
-                    "f" if i < chars.len() && (chars[i] == '"' || chars[i] == '\'') => {
-                        let quote = chars[i]; let mut val = String::new(); i += 1;
-                        while i < chars.len() && chars[i] != quote {
-                            if chars[i] == '\\' {
-                                i += 1; if i == chars.len() { break; }
-                                match chars[i] { 'n' => val.push('\n'), 't' => val.push('\t'), '\\' => val.push('\\'), '\'' => val.push('\''), '"' => val.push('"'), _ => val.push(chars[i]) }
-                            } else { val.push(chars[i]); } i += 1;
-                        }
-                        if i == chars.len() { return Err(format!("unterminated f-string line {}", line_no)); } i += 1;
-                        
-                        // 簡單 f-string 轉換為 Format 字串節點，後續執行會透過 format! 引擎替換 {}
-                        // 為了簡單，這裡我們先把 f"..." 轉換成呼叫 str.format 的結構，例如 `"Name: {}".format(name)`
-                        // 不過直接支援太複雜，我們先將它辨識為一種特殊的 AST `Expr::FString(val)`。
-                        tokens.push(Token { kind: TokenKind::Name(format!("__fstring__{}", val)), line: line_no, col: start + 1 });
-                        continue;
-                    },
                     _ => TokenKind::Name(text),
                 };
                 tokens.push(Token { kind, line: line_no, col: start + 1 }); continue;
@@ -89,7 +72,8 @@ fn lex_source(source: &str) -> Result<Vec<Token>, String> {
                     if chars[i] == '\\' {
                         i += 1; if i == chars.len() { break; }
                         match chars[i] { 'n' => val.push('\n'), 't' => val.push('\t'), '\\' => val.push('\\'), '\'' => val.push('\''), '"' => val.push('"'), _ => val.push(chars[i]) }
-                    } else { val.push(chars[i]); } i += 1;
+                    } else { val.push(chars[i]); }
+                    i += 1;
                 }
                 if i == chars.len() { return Err(format!("unterminated string line {}", line_no)); } i += 1;
                 tokens.push(Token { kind: TokenKind::String(val), line: line_no, col: start + 1 }); continue;
@@ -103,7 +87,6 @@ fn lex_source(source: &str) -> Result<Vec<Token>, String> {
                     '(' => TokenKind::Lparen, ')' => TokenKind::Rparen, '[' => TokenKind::Lbracket, ']' => TokenKind::Rbracket, '{' => TokenKind::Lbrace, '}' => TokenKind::Rbrace,
                     ',' => TokenKind::Comma, ':' => TokenKind::Colon, '.' => TokenKind::Dot, '+' => TokenKind::Plus, '-' => TokenKind::Minus, '*' => TokenKind::Star,
                     '/' => TokenKind::Slash, '%' => TokenKind::Percent, '=' => TokenKind::Equal, '<' => TokenKind::Lt, '>' => TokenKind::Gt,
-                    '@' => TokenKind::At, // <--- 新增裝飾器 @ 的辨識
                     _ => return Err(format!("unexpected '{}' line {}", c, line_no)),
                 }; (k, 1)
             };
@@ -124,20 +107,20 @@ fn lex_source(source: &str) -> Result<Vec<Token>, String> {
 
 #[derive(Debug, Clone)]
 enum Expr {
-    NoneVal, Bool(bool), Int(i64), Float(f64), String(String), Name(String), FString(String),
+    NoneVal, Bool(bool), Int(i64), Float(f64), String(String), Name(String),
     List(Vec<Expr>), Dict(Vec<(Expr, Expr)>), Tuple(Vec<Expr>),
     ListComp(Box<Expr>, String, Box<Expr>, Option<Box<Expr>>), Lambda(Vec<String>, Box<Expr>),
     BinOp(Op, Box<Expr>, Box<Expr>), UnaryOp(Op, Box<Expr>), Compare(Op, Box<Expr>, Box<Expr>), Logical(LogicOp, Box<Expr>, Box<Expr>),
-    Call(Box<Expr>, Vec<Expr>), Attribute(Box<Expr>, String), Subscript(Box<Expr>, Box<Expr>),
+    Call(Box<Expr>, Vec<Expr>, Vec<(String, Expr)>), // 修改: 新增 kwargs
+    Attribute(Box<Expr>, String), Subscript(Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone)]
 enum Stmt {
-    Expr(Expr), Assign(Expr, Expr), // <--- 修改：不再侷限於 String，左值改為 Expr 以支援 (a, b) = ...
-    AssignIndex(Expr, Expr, Expr), AssignAttr(Expr, String, Expr),
-    If(Expr, Vec<Stmt>, Vec<Stmt>), While(Expr, Vec<Stmt>), For(Expr, Expr, Vec<Stmt>), // For 的變數也支援多重 (a,b)
-    FunctionDef(String, Vec<String>, Vec<Stmt>, Vec<Expr>), // <--- 新增一個 vec 儲存裝飾器
-    ClassDef(String, Option<Expr>, Vec<Stmt>), 
+    Expr(Expr), Assign(String, Expr), AssignIndex(Expr, Expr, Expr), AssignAttr(Expr, String, Expr),
+    If(Expr, Vec<Stmt>, Vec<Stmt>), While(Expr, Vec<Stmt>), For(String, Expr, Vec<Stmt>),
+    FunctionDef(String, Vec<(String, Option<Expr>)>, Option<String>, Vec<Stmt>), // 修改: 預設參數與 *args
+    ClassDef(String, Option<Expr>, Vec<Stmt>),
     Try(Vec<Stmt>, Option<String>, Option<String>, Vec<Stmt>), Raise(Expr),
     Import(String), FromImport(String, Vec<String>),
     Return(Option<Expr>), Break, Continue, Pass,
@@ -175,15 +158,12 @@ impl<'a> Parser<'a> {
         let tok = self.peek().clone();
         let mut e = match &tok.kind {
             TokenKind::NoneVal => { self.pos += 1; Expr::NoneVal }
-            TokenKind::TrueVal => { self.pos += 1; Expr::Bool(true) } TokenKind::FalseVal => { self.pos += 1; Expr::Bool(false) }
-            TokenKind::Int(v) => { self.pos += 1; Expr::Int(*v) } TokenKind::Float(v) => { self.pos += 1; Expr::Float(*v) }
+            TokenKind::TrueVal => { self.pos += 1; Expr::Bool(true) } 
+            TokenKind::FalseVal => { self.pos += 1; Expr::Bool(false) }
+            TokenKind::Int(v) => { self.pos += 1; Expr::Int(*v) } 
+            TokenKind::Float(v) => { self.pos += 1; Expr::Float(*v) }
             TokenKind::String(v) => { self.pos += 1; Expr::String(v.clone()) }
-            TokenKind::Name(n) => { 
-                self.pos += 1; 
-                // 處理 F-string 偷吃步轉譯
-                if n.starts_with("__fstring__") { Expr::FString(n["__fstring__".len()..].to_string()) }
-                else { Expr::Name(n.clone()) }
-            }
+            TokenKind::Name(n) => { self.pos += 1; Expr::Name(n.clone()) }
             TokenKind::Lparen => {
                 self.pos += 1;
                 if self.match_token(&TokenKind::Rparen) { Expr::Tuple(vec![]) }
@@ -191,7 +171,9 @@ impl<'a> Parser<'a> {
                     let first = self.parse_expr()?;
                     if self.match_token(&TokenKind::Comma) {
                         let mut items = vec![first];
-                        if self.peek().kind != TokenKind::Rparen { loop { items.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; } } }
+                        if self.peek().kind != TokenKind::Rparen { 
+                            loop { items.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; } } 
+                        }
                         self.expect(TokenKind::Rparen, "expected ')'")?; Expr::Tuple(items)
                     } else { self.expect(TokenKind::Rparen, "expected ')'")?; first }
                 }
@@ -226,18 +208,37 @@ impl<'a> Parser<'a> {
             }
             _ => return Err(format!("{}:{}:{}: expected expr", self.filename, tok.line, tok.col)),
         };
-        self.parse_postfix(&mut e)?; Ok(e)
+        self.parse_postfix(&mut e)?;
+        Ok(e)
     }
-
+    
     fn parse_postfix(&mut self, expr: &mut Expr) -> Result<(), String> {
         loop {
             if self.match_token(&TokenKind::Lparen) {
                 let mut args = Vec::new();
+                let mut kwargs = Vec::new(); // 新增: 解析 Kwargs
                 if !self.match_token(&TokenKind::Rparen) {
-                    loop { args.push(self.parse_expr()?); if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; } }
+                    loop {
+                        let mut is_kwarg = false;
+                        if let Some(t1) = self.tokens.get(self.pos) {
+                            if let TokenKind::Name(_) = t1.kind {
+                                if let Some(t2) = self.tokens.get(self.pos + 1) {
+                                    if t2.kind == TokenKind::Equal { is_kwarg = true; }
+                                }
+                            }
+                        }
+                        if is_kwarg {
+                            let name = if let TokenKind::Name(n) = &self.peek().kind { n.clone() } else { unreachable!() };
+                            self.pos += 2; // skip name and '='
+                            kwargs.push((name, self.parse_expr()?));
+                        } else {
+                            args.push(self.parse_expr()?);
+                        }
+                        if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; }
+                    }
                     self.expect(TokenKind::Rparen, "expected ')'")?;
                 }
-                *expr = Expr::Call(Box::new(expr.clone()), args);
+                *expr = Expr::Call(Box::new(expr.clone()), args, kwargs);
             } else if self.match_token(&TokenKind::Dot) {
                 if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected attr")?.kind { *expr = Expr::Attribute(Box::new(expr.clone()), n.clone()); }
             } else if self.match_token(&TokenKind::Lbracket) {
@@ -246,51 +247,23 @@ impl<'a> Parser<'a> {
         } Ok(())
     }
 
-    fn parse_unary(&mut self) -> Result<Expr, String> {
-        if self.match_token(&TokenKind::Minus) { Ok(Expr::UnaryOp(Op::Neg, Box::new(self.parse_unary()?))) } else { self.parse_primary() }
-    }
+    fn parse_unary(&mut self) -> Result<Expr, String> { if self.match_token(&TokenKind::Minus) { Ok(Expr::UnaryOp(Op::Neg, Box::new(self.parse_unary()?))) } else { self.parse_primary() } }
     fn parse_factor(&mut self) -> Result<Expr, String> {
         let mut e = self.parse_unary()?;
-        loop {
-            let op = if self.match_token(&TokenKind::Star) { Op::Mul } else if self.match_token(&TokenKind::Slash) { Op::Div } else if self.match_token(&TokenKind::Percent) { Op::Mod } else { break };
-            e = Expr::BinOp(op, Box::new(e), Box::new(self.parse_unary()?));
-        } Ok(e)
+        loop { let op = if self.match_token(&TokenKind::Star) { Op::Mul } else if self.match_token(&TokenKind::Slash) { Op::Div } else if self.match_token(&TokenKind::Percent) { Op::Mod } else { break }; e = Expr::BinOp(op, Box::new(e), Box::new(self.parse_unary()?)); } Ok(e)
     }
     fn parse_term(&mut self) -> Result<Expr, String> {
         let mut e = self.parse_factor()?;
-        loop {
-            let op = if self.match_token(&TokenKind::Plus) { Op::Add } else if self.match_token(&TokenKind::Minus) { Op::Sub } else { break };
-            e = Expr::BinOp(op, Box::new(e), Box::new(self.parse_factor()?));
-        } Ok(e)
+        loop { let op = if self.match_token(&TokenKind::Plus) { Op::Add } else if self.match_token(&TokenKind::Minus) { Op::Sub } else { break }; e = Expr::BinOp(op, Box::new(e), Box::new(self.parse_factor()?)); } Ok(e)
     }
     fn parse_comp(&mut self) -> Result<Expr, String> {
         let mut e = self.parse_term()?;
-        loop {
-            let op = if self.match_token(&TokenKind::Eqeq) { Op::Eq } else if self.match_token(&TokenKind::Ne) { Op::Ne } else if self.match_token(&TokenKind::Lt) { Op::Lt }
-            else if self.match_token(&TokenKind::Le) { Op::Le } else if self.match_token(&TokenKind::Gt) { Op::Gt } else if self.match_token(&TokenKind::Ge) { Op::Ge } else { break };
-            e = Expr::Compare(op, Box::new(e), Box::new(self.parse_term()?));
-        } Ok(e)
+        loop { let op = if self.match_token(&TokenKind::Eqeq) { Op::Eq } else if self.match_token(&TokenKind::Ne) { Op::Ne } else if self.match_token(&TokenKind::Lt) { Op::Lt }
+            else if self.match_token(&TokenKind::Le) { Op::Le } else if self.match_token(&TokenKind::Gt) { Op::Gt } else if self.match_token(&TokenKind::Ge) { Op::Ge } else { break }; e = Expr::Compare(op, Box::new(e), Box::new(self.parse_term()?)); } Ok(e)
     }
     fn parse_not(&mut self) -> Result<Expr, String> { if self.match_token(&TokenKind::Not) { Ok(Expr::UnaryOp(Op::Not, Box::new(self.parse_not()?))) } else { self.parse_comp() } }
     fn parse_and(&mut self) -> Result<Expr, String> { let mut e = self.parse_not()?; while self.match_token(&TokenKind::And) { e = Expr::Logical(LogicOp::And, Box::new(e), Box::new(self.parse_not()?)); } Ok(e) }
     
-    // --- 新增：Tuple Unpacking (a, b = 1, 2) 在這裡實作，沒有逗號就是一般的 Expr ---
-    fn parse_tuple_expr(&mut self) -> Result<Expr, String> {
-        let first = self.parse_and()?;
-        if self.match_token(&TokenKind::Comma) {
-            let mut items = vec![first];
-            if self.peek().kind != TokenKind::Newline && self.peek().kind != TokenKind::Rparen && self.peek().kind != TokenKind::Equal {
-                loop { 
-                    items.push(self.parse_and()?); 
-                    if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Equal || self.peek().kind == TokenKind::Newline { break; } 
-                }
-            }
-            Ok(Expr::Tuple(items))
-        } else {
-            Ok(first)
-        }
-    }
-
     fn parse_expr(&mut self) -> Result<Expr, String> { 
         if self.match_token(&TokenKind::Lambda) {
             let mut p = Vec::new();
@@ -300,7 +273,7 @@ impl<'a> Parser<'a> {
             }
             return Ok(Expr::Lambda(p, Box::new(self.parse_expr()?)));
         }
-        let mut e = self.parse_tuple_expr()?; while self.match_token(&TokenKind::Or) { e = Expr::Logical(LogicOp::Or, Box::new(e), Box::new(self.parse_tuple_expr()?)); } Ok(e) 
+        let mut e = self.parse_and()?; while self.match_token(&TokenKind::Or) { e = Expr::Logical(LogicOp::Or, Box::new(e), Box::new(self.parse_and()?)); } Ok(e) 
     }
 
     fn parse_block(&mut self) -> Result<Vec<Stmt>, String> {
@@ -310,47 +283,43 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Result<Stmt, String> {
-        if self.match_token(&TokenKind::Import) {
-            let n = self.parse_dotted_name()?;
-            self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::Import(n));
-        }
+        if self.match_token(&TokenKind::Import) { let n = self.parse_dotted_name()?; self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::Import(n)); }
         if self.match_token(&TokenKind::From) {
-            let mod_n = self.parse_dotted_name()?;
-            self.expect(TokenKind::Import, "expected 'import'")?; let mut names = Vec::new();
-            loop {
-                if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected name")?.kind { names.push(n.clone()); }
-                if !self.match_token(&TokenKind::Comma) { break; }
-            }
+            let mod_n = self.parse_dotted_name()?; self.expect(TokenKind::Import, "expected 'import'")?; let mut names = Vec::new();
+            loop { if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected name")?.kind { names.push(n.clone()); } if !self.match_token(&TokenKind::Comma) { break; } }
             self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::FromImport(mod_n, names));
-        }
-
-        // --- 收集裝飾器 @decorator ---
-        let mut decorators = Vec::new();
-        while self.match_token(&TokenKind::At) {
-            decorators.push(self.parse_expr()?);
-            self.expect(TokenKind::Newline, "expected newline after decorator")?;
-            self.skip_newlines();
         }
 
         if self.match_token(&TokenKind::Def) {
             let n = if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected name")?.kind { n.clone() } else { unreachable!() };
-            self.expect(TokenKind::Lparen, "expected '('")?; let mut p = Vec::new();
+            self.expect(TokenKind::Lparen, "expected '('")?; 
+            let mut p = Vec::new();
+            let mut vararg = None;
             if !self.match_token(&TokenKind::Rparen) {
-                loop { if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected param")?.kind { p.push(pn.clone()); } if !self.match_token(&TokenKind::Comma) { break; } }
+                loop {
+                    if self.match_token(&TokenKind::Star) { // 解析 *args
+                        if let TokenKind::Name(pn) = &self.expect(TokenKind::Name("".into()), "expected vararg name")?.kind { vararg = Some(pn.clone()); }
+                        if self.match_token(&TokenKind::Comma) {}
+                        break;
+                    } else if let TokenKind::Name(pn) = &self.peek().kind.clone() {
+                        self.pos += 1;
+                        let def_val = if self.match_token(&TokenKind::Equal) { Some(self.parse_expr()?) } else { None };
+                        p.push((pn.clone(), def_val));
+                    } else {
+                        return Err(format!("{}:{}:{}: expected parameter name", self.filename, self.peek().line, self.peek().col));
+                    }
+                    if !self.match_token(&TokenKind::Comma) || self.peek().kind == TokenKind::Rparen { break; }
+                }
                 self.expect(TokenKind::Rparen, "expected ')'")?;
             }
-            self.expect(TokenKind::Colon, "expected ':'")?; 
-            return Ok(Stmt::FunctionDef(n, p, self.parse_block()?, decorators));
+            self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::FunctionDef(n, p, vararg, self.parse_block()?));
         }
-        
         if self.match_token(&TokenKind::Class) {
-            if !decorators.is_empty() { return Err("Class decorators not supported".into()); }
             let n = if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected class name")?.kind { n.clone() } else { unreachable!() };
-            let mut base_expr = None; 
+            let mut base_expr = None;
             if self.match_token(&TokenKind::Lparen) { base_expr = Some(self.parse_expr()?); self.expect(TokenKind::Rparen, "expected ')'")?; }
             self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::ClassDef(n, base_expr, self.parse_block()?));
         }
-        
         if self.match_token(&TokenKind::Try) {
             self.expect(TokenKind::Colon, "expected ':'")?; let body = self.parse_block()?; self.skip_newlines();
             self.expect(TokenKind::Except, "expected 'except'")?;
@@ -371,7 +340,7 @@ impl<'a> Parser<'a> {
         }
         if self.match_token(&TokenKind::While) { let test = self.parse_expr()?; self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::While(test, self.parse_block()?)); }
         if self.match_token(&TokenKind::For) {
-            let v = self.parse_expr()?; // <--- For 的迭代變數現在也是 Expr (支援 for a, b in items)
+            let v = if let TokenKind::Name(n) = &self.expect(TokenKind::Name("".into()), "expected var")?.kind { n.clone() } else { unreachable!() };
             self.expect(TokenKind::In, "expected 'in'")?; let iter = self.parse_expr()?; self.expect(TokenKind::Colon, "expected ':'")?; return Ok(Stmt::For(v, iter, self.parse_block()?));
         }
         if self.match_token(&TokenKind::Return) { if self.match_token(&TokenKind::Newline) { return Ok(Stmt::Return(None)); } let e = self.parse_expr()?; self.expect(TokenKind::Newline, "expected newline")?; return Ok(Stmt::Return(Some(e))); }
@@ -385,12 +354,9 @@ impl<'a> Parser<'a> {
             let op = if self.prev().kind == TokenKind::PlusEq { Op::Add } else { Op::Sub };
             let parsed_val = self.parse_expr()?; self.expect(TokenKind::Newline, "expected newline")?;
             let final_val = if is_aug { Expr::BinOp(op, Box::new(expr.clone()), Box::new(parsed_val)) } else { parsed_val };
-
             return match expr {
-                Expr::Name(_) | Expr::Tuple(_) => Ok(Stmt::Assign(expr, final_val)), // <--- 支援多重賦值 (a, b) = 1, 2
-                Expr::Subscript(o, i) => Ok(Stmt::AssignIndex(*o, *i, final_val)),
-                Expr::Attribute(o, a) => Ok(Stmt::AssignAttr(*o, a, final_val)),
-                _ => Err("SyntaxError: invalid assign target".into()),
+                Expr::Name(n) => Ok(Stmt::Assign(n, final_val)), Expr::Subscript(o, i) => Ok(Stmt::AssignIndex(*o, *i, final_val)),
+                Expr::Attribute(o, a) => Ok(Stmt::AssignAttr(*o, a, final_val)), _ => Err("SyntaxError: invalid assign target".into()),
             };
         }
         self.expect(TokenKind::Newline, "expected newline")?; Ok(Stmt::Expr(expr))
@@ -406,16 +372,15 @@ impl<'a> Parser<'a> {
 enum PyValue {
     None, Bool(bool), Int(i64), Float(f64), Str(String),
     Tuple(Vec<PyValue>), List(Rc<RefCell<Vec<PyValue>>>), Dict(Rc<RefCell<HashMap<String, PyValue>>>),
-    Function { name: String, params: Vec<String>, body: Rc<Vec<Stmt>>, closure: Rc<RefCell<Env>> },
-    Builtin(String, Rc<dyn Fn(&mut Runtime, Vec<PyValue>) -> Result<PyValue, PyValue>>),
+    // 修改: 支援 defaults 與 vararg
+    Function { name: String, params: Vec<String>, defaults: HashMap<String, PyValue>, vararg: Option<String>, body: Rc<Vec<Stmt>>, closure: Rc<RefCell<Env>> },
+    // Builtin 函數簽名加入 HashMap 以支援被呼叫時送入 kwargs (雖然通常忽略)
+    Builtin(String, Rc<dyn Fn(&mut Runtime, Vec<PyValue>, HashMap<String, PyValue>) -> Result<PyValue, PyValue>>),
     Method(Box<PyValue>, String), 
     Class { name: String, base: Option<Box<PyValue>>, methods: Rc<HashMap<String, PyValue>> },
     Instance { class_val: Box<PyValue>, attrs: Rc<RefCell<HashMap<String, PyValue>>> },
     BoundMethod { receiver: Box<PyValue>, func: Box<PyValue> },
-    Exception(String, Box<PyValue>),
-    Module(String, Rc<RefCell<Env>>), 
-    File(Rc<RefCell<Option<File>>>),
-    BuiltinMethodFile(Rc<RefCell<Option<File>>>, String),
+    Exception(String, Box<PyValue>), Module(String, Rc<RefCell<Env>>), File(Rc<RefCell<Option<File>>>),
 }
 
 impl PartialEq for PyValue {
@@ -435,13 +400,11 @@ impl fmt::Display for PyValue {
             PyValue::Dict(d) => { let items: Vec<String> = d.borrow().iter().map(|(k, v)| format!("'{}': {}", k, v)).collect(); write!(f, "{{{}}}", items.join(", ")) }
             PyValue::Class { name, .. } => write!(f, "<class '{}'>", name),
             PyValue::Instance { class_val, .. } => { if let PyValue::Class { name, .. } = &**class_val { write!(f, "<{} object>", name) } else { write!(f, "<object>") } },
-            PyValue::BoundMethod { .. } => write!(f, "<bound method>"),
-            PyValue::Exception(t, a) => write!(f, "{}({})", t, a),
+            PyValue::BoundMethod { .. } => write!(f, "<bound method>"), PyValue::Exception(t, a) => write!(f, "{}({})", t, a),
             PyValue::Builtin(name, _) => write!(f, "<built-in function {}>", name),
             PyValue::Function { name, .. } => write!(f, "<function {}>", name),
             PyValue::Module(name, _) => write!(f, "<module '{}'>", name),
             PyValue::File(file) => if file.borrow().is_some() { write!(f, "<open file>") } else { write!(f, "<closed file>") },
-            PyValue::BuiltinMethodFile(_, name) => write!(f, "<built-in method {} of file>", name),
             PyValue::Method(_, name) => write!(f, "<built-in method {}>", name),
         }
     }
@@ -461,7 +424,7 @@ fn py_to_string(rt: &mut Runtime, val: PyValue) -> Result<String, PyValue> {
     if let PyValue::Instance { class_val, .. } = &val {
         if let Some(m) = get_class_method(class_val, "__str__") {
             let bound = PyValue::BoundMethod { receiver: Box::new(val.clone()), func: Box::new(m) };
-            let res = call_func(rt, bound, vec![])?;
+            let res = call_func(rt, bound, vec![], HashMap::new())?;
             if let PyValue::Str(s) = res { return Ok(s); }
         }
     } Ok(val.to_string())
@@ -497,62 +460,42 @@ fn load_module(rt: &mut Runtime, name: &str) -> Result<PyValue, PyValue> {
     if let Some(m) = rt.sys_modules.get(name) { return Ok(m.clone()); }
     let path_base = name.replace('.', "/"); let file_path = format!("{}.py", path_base); let pkg_path = format!("{}/__init__.py", path_base);
     let (path, src) = if let Ok(s) = fs::read_to_string(&file_path) { (file_path, s) } else if let Ok(s) = fs::read_to_string(&pkg_path) { (pkg_path, s) } else { return py_err("ImportError", &format!("No module named '{}'", name)); };
-    let tokens = lex_source(&src).map_err(|e| py_err_val("SyntaxError", &e))?;
-    let mut parser = Parser::new(&tokens, &path);
-    let ast = parser.parse_module().map_err(|e| py_err_val("SyntaxError", &e))?;
-    let mod_env = Env::new(None); install_builtins(&mod_env);
-    exec_block(rt, &mod_env, &ast)?;
-    let module_val = PyValue::Module(name.to_string(), mod_env);
-    rt.sys_modules.insert(name.to_string(), module_val.clone());
-    Ok(module_val)
+    let tokens = lex_source(&src).map_err(|e| py_err_val("SyntaxError", &e))?; let mut parser = Parser::new(&tokens, &path); let ast = parser.parse_module().map_err(|e| py_err_val("SyntaxError", &e))?;
+    let mod_env = Env::new(None); install_builtins(&mod_env); exec_block(rt, &mod_env, &ast)?;
+    let module_val = PyValue::Module(name.to_string(), mod_env); rt.sys_modules.insert(name.to_string(), module_val.clone()); Ok(module_val)
 }
 
 fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -> Result<PyValue, PyValue> {
     match expr {
         Expr::NoneVal => Ok(PyValue::None), Expr::Bool(b) => Ok(PyValue::Bool(*b)), Expr::Int(v) => Ok(PyValue::Int(*v)), Expr::Float(v) => Ok(PyValue::Float(*v)),
         Expr::String(v) => Ok(PyValue::Str(v.clone())), Expr::Name(n) => env.borrow().get(n),
-        
-        // --- f-string 解構 ---
-        Expr::FString(s) => {
-            // 這是一個極度簡易的 f-string 實作：只找大括號 `{}` 然後去環境找變數
-            let mut result = String::new();
-            let mut chars = s.chars().peekable();
-            while let Some(c) = chars.next() {
-                if c == '{' {
-                    let mut var_name = String::new();
-                    while let Some(vc) = chars.next() {
-                        if vc == '}' { break; } var_name.push(vc);
-                    }
-                    let val = env.borrow().get(&var_name.trim())?;
-                    result.push_str(&py_to_string(rt, val)?);
-                } else { result.push(c); }
-            }
-            Ok(PyValue::Str(result))
-        }
-
         Expr::Tuple(items) => { let mut t = vec![]; for i in items { t.push(eval_expr(rt, env, i)?); } Ok(PyValue::Tuple(t)) }
         Expr::List(items) => { let mut l = vec![]; for i in items { l.push(eval_expr(rt, env, i)?); } Ok(PyValue::List(Rc::new(RefCell::new(l)))) }
         Expr::Dict(pairs) => { let mut d = HashMap::new(); for (k, v) in pairs { d.insert(eval_expr(rt, env, k)?.as_key()?, eval_expr(rt, env, v)?); } Ok(PyValue::Dict(Rc::new(RefCell::new(d)))) }
         Expr::Lambda(params, body_expr) => {
             let body = vec![Stmt::Return(Some(*body_expr.clone()))];
-            Ok(PyValue::Function { name: "<lambda>".into(), params: params.clone(), body: Rc::new(body), closure: Rc::clone(env) })
+            Ok(PyValue::Function { name: "<lambda>".into(), params: params.clone(), defaults: HashMap::new(), vararg: None, body: Rc::new(body), closure: Rc::clone(env) })
         }
         Expr::ListComp(exp, var, iter, cond) => {
-            let it = eval_expr(rt, env, iter)?;
-            let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "not iterable") };
+            let it = eval_expr(rt, env, iter)?; let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "not iterable") };
             let mut res = Vec::new(); let loc = Env::new(Some(Rc::clone(env)));
             for item in items {
                 loc.borrow_mut().assign(var, item);
                 let ok = if let Some(c) = cond { eval_expr(rt, &loc, c)?.is_truthy() } else { true };
                 if ok { res.push(eval_expr(rt, &loc, exp)?); }
-            }
-            Ok(PyValue::List(Rc::new(RefCell::new(res))))
+            } Ok(PyValue::List(Rc::new(RefCell::new(res))))
         }
         Expr::BinOp(op, l, r) => { let left_val = eval_expr(rt, env, l)?; let right_val = eval_expr(rt, env, r)?; apply_binop(rt, env, *op, left_val, right_val) }
         Expr::UnaryOp(op, operand) => { let v = eval_expr(rt, env, operand)?; match op { Op::Neg => match v { PyValue::Int(i) => Ok(PyValue::Int(-i)), _ => Ok(PyValue::Float(-v.as_num()?)) }, Op::Not => Ok(PyValue::Bool(!v.is_truthy())), _ => py_err("TypeError", "bad unary op") } }
         Expr::Compare(op, l, r) => { let left_val = eval_expr(rt, env, l)?; let right_val = eval_expr(rt, env, r)?; apply_comp(rt, env, *op, left_val, right_val) }
         Expr::Logical(op, l, r) => { let lv = eval_expr(rt, env, l)?; match op { LogicOp::And => if !lv.is_truthy() { Ok(lv) } else { eval_expr(rt, env, r) }, LogicOp::Or => if lv.is_truthy() { Ok(lv) } else { eval_expr(rt, env, r) } } }
-        Expr::Call(func, args) => { let f = eval_expr(rt, env, func)?; let mut a = vec![]; for expr_a in args { a.push(eval_expr(rt, env, expr_a)?); } call_func(rt, f, a) }
+        
+        Expr::Call(func, args, kwargs) => { // 支援 Kwargs 計算
+            let f = eval_expr(rt, env, func)?;
+            let mut a = vec![]; for expr_a in args { a.push(eval_expr(rt, env, expr_a)?); }
+            let mut kw = HashMap::new(); for (k, v) in kwargs { kw.insert(k.clone(), eval_expr(rt, env, v)?); }
+            call_func(rt, f, a, kw)
+        }
         Expr::Attribute(obj, attr) => {
             let o = eval_expr(rt, env, obj)?;
             match &o {
@@ -562,8 +505,7 @@ fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -> Result<Py
                     if let Some(m) = get_class_method(class_val, attr) { return Ok(PyValue::BoundMethod { receiver: Box::new(o.clone()), func: Box::new(m) }); }
                     py_err("AttributeError", &format!("object has no attribute '{}'", attr))
                 }
-                PyValue::List(_) | PyValue::Dict(_) | PyValue::Str(_) => Ok(PyValue::Method(Box::new(o.clone()), attr.clone())),
-                PyValue::File(f) => { match attr.as_str() { "read" | "write" | "close" => Ok(PyValue::BuiltinMethodFile(Rc::clone(f), attr.clone())), _ => py_err("AttributeError", &format!("file object has no attribute '{}'", attr)) } }
+                PyValue::List(_) | PyValue::Dict(_) | PyValue::Str(_) | PyValue::File(_) => Ok(PyValue::Method(Box::new(o.clone()), attr.clone())),
                 _ => py_err("AttributeError", "object has no attribute")
             }
         }
@@ -573,7 +515,10 @@ fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -> Result<Py
                 PyValue::Tuple(t) => { let idx = match i { PyValue::Int(i) => i, _ => return py_err("TypeError", "index must be int") }; if idx < 0 || idx as usize >= t.len() { py_err("IndexError", "tuple index out of range") } else { Ok(t[idx as usize].clone()) } }
                 PyValue::List(l) => { let idx = match i { PyValue::Int(i) => i, _ => return py_err("TypeError", "index must be int") }; let b = l.borrow(); if idx < 0 || idx as usize >= b.len() { py_err("IndexError", "list index out of range") } else { Ok(b[idx as usize].clone()) } }
                 PyValue::Dict(d) => d.borrow().get(&i.as_key()?).cloned().ok_or_else(|| PyValue::Exception("KeyError".into(), Box::new(i.clone()))),
-                PyValue::Instance { class_val, .. } => { if let Some(m) = get_class_method(class_val, "__getitem__") { let bound = PyValue::BoundMethod { receiver: Box::new(o.clone()), func: Box::new(m) }; return call_func(rt, bound, vec![i]); } py_err("TypeError", "object is not subscriptable") }
+                PyValue::Instance { class_val, .. } => {
+                    if let Some(m) = get_class_method(class_val, "__getitem__") { let bound = PyValue::BoundMethod { receiver: Box::new(o.clone()), func: Box::new(m) }; return call_func(rt, bound, vec![i], HashMap::new()); }
+                    py_err("TypeError", "object is not subscriptable")
+                }
                 _ => py_err("TypeError", "object is not subscriptable"),
             }
         }
@@ -582,14 +527,29 @@ fn eval_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, expr: &Expr) -> Result<Py
 
 fn apply_binop(rt: &mut Runtime, _env: &Rc<RefCell<Env>>, op: Op, l: PyValue, r: PyValue) -> Result<PyValue, PyValue> {
     if op == Op::Add {
-        if let PyValue::Instance { class_val, .. } = &l { if let Some(m) = get_class_method(class_val, "__add__") { let bound = PyValue::BoundMethod { receiver: Box::new(l.clone()), func: Box::new(m) }; return call_func(rt, bound, vec![r]); } }
+        if let PyValue::Instance { class_val, .. } = &l {
+            if let Some(m) = get_class_method(class_val, "__add__") { 
+                let bound = PyValue::BoundMethod { receiver: Box::new(l.clone()), func: Box::new(m) }; 
+                return call_func(rt, bound, vec![r], HashMap::new()); 
+            }
+        }
         if let (PyValue::Str(a), PyValue::Str(b)) = (&l, &r) { return Ok(PyValue::Str(format!("{}{}", a, b))); }
     }
     if let (PyValue::Int(a), PyValue::Int(b)) = (&l, &r) {
-        return match op { Op::Add => Ok(PyValue::Int(a+b)), Op::Sub => Ok(PyValue::Int(a-b)), Op::Mul => Ok(PyValue::Int(a*b)), Op::Div => { if *b == 0 { return py_err("ZeroDivisionError", "division by zero"); } Ok(PyValue::Float((*a as f64)/(*b as f64))) }, Op::Mod => { if *b == 0 { return py_err("ZeroDivisionError", "modulo by zero"); } Ok(PyValue::Int(a%b)) }, _ => py_err("TypeError", "unsupported operand type(s)") };
+        return match op {
+            Op::Add => Ok(PyValue::Int(a+b)), Op::Sub => Ok(PyValue::Int(a-b)), Op::Mul => Ok(PyValue::Int(a*b)),
+            Op::Div => { if *b == 0 { return py_err("ZeroDivisionError", "division by zero"); } Ok(PyValue::Float((*a as f64)/(*b as f64))) },
+            Op::Mod => { if *b == 0 { return py_err("ZeroDivisionError", "modulo by zero"); } Ok(PyValue::Int(a%b)) },
+            _ => py_err("TypeError", "unsupported operand type(s)")
+        };
     }
     let a = l.as_num()?; let b = r.as_num()?;
-    match op { Op::Add => Ok(PyValue::Float(a+b)), Op::Sub => Ok(PyValue::Float(a-b)), Op::Mul => Ok(PyValue::Float(a*b)), Op::Div => { if b == 0.0 { return py_err("ZeroDivisionError", "division by zero"); } Ok(PyValue::Float(a/b)) }, Op::Mod => Ok(PyValue::Float((a as i64 % b as i64) as f64)), _ => py_err("TypeError", "unsupported operand type(s)") }
+    match op {
+        Op::Add => Ok(PyValue::Float(a+b)), Op::Sub => Ok(PyValue::Float(a-b)), Op::Mul => Ok(PyValue::Float(a*b)),
+        Op::Div => { if b == 0.0 { return py_err("ZeroDivisionError", "division by zero"); } Ok(PyValue::Float(a/b)) },
+        Op::Mod => Ok(PyValue::Float((a as i64 % b as i64) as f64)),
+        _ => py_err("TypeError", "unsupported operand type(s)")
+    }
 }
 
 fn apply_comp(_rt: &mut Runtime, _env: &Rc<RefCell<Env>>, op: Op, l: PyValue, r: PyValue) -> Result<PyValue, PyValue> {
@@ -597,35 +557,19 @@ fn apply_comp(_rt: &mut Runtime, _env: &Rc<RefCell<Env>>, op: Op, l: PyValue, r:
     let a = l.as_num()?; let b = r.as_num()?; Ok(PyValue::Bool(match op { Op::Eq => a == b, Op::Ne => a != b, Op::Lt => a < b, Op::Le => a <= b, Op::Gt => a > b, Op::Ge => a >= b, _ => false }))
 }
 
-// --- 遞迴處理多重賦值 (Tuple Unpacking) ---
-fn assign_expr(rt: &mut Runtime, env: &Rc<RefCell<Env>>, target: &Expr, val: PyValue) -> Result<(), PyValue> {
-    match target {
-        Expr::Name(n) => { env.borrow_mut().assign(n, val); Ok(()) }
-        Expr::Tuple(targets) => {
-            let items = match val { PyValue::Tuple(t) => t, PyValue::List(l) => l.borrow().clone(), _ => return py_err("TypeError", "cannot unpack non-iterable object") };
-            if targets.len() != items.len() { return py_err("ValueError", "not enough values to unpack"); }
-            for (t, v) in targets.iter().zip(items) { assign_expr(rt, env, t, v)?; }
-            Ok(())
-        }
-        _ => py_err("SyntaxError", "invalid assignment target")
-    }
-}
-
 fn exec_stmt(rt: &mut Runtime, env: &Rc<RefCell<Env>>, stmt: &Stmt) -> Result<ExecStatus, PyValue> {
     match stmt {
         Stmt::Expr(e) => { eval_expr(rt, env, e)?; Ok(ExecStatus::Continue) }
-        Stmt::Assign(target_expr, e) => { 
-            let v = eval_expr(rt, env, e)?; 
-            assign_expr(rt, env, target_expr, v)?; // 呼叫 unpacking
-            Ok(ExecStatus::Continue) 
-        }
+        Stmt::Assign(n, e) => { let v = eval_expr(rt, env, e)?; env.borrow_mut().assign(n, v); Ok(ExecStatus::Continue) }
         Stmt::AssignIndex(t, i, v) => {
             let obj = eval_expr(rt, env, t)?; let idx = eval_expr(rt, env, i)?; let val = eval_expr(rt, env, v)?;
             match &obj {
                 PyValue::List(l) => { let i = match idx { PyValue::Int(i) => i, _ => return py_err("TypeError", "list indices must be integers") }; let mut b = l.borrow_mut(); if i < 0 || i as usize >= b.len() { return py_err("IndexError", "list assignment index out of range"); } b[i as usize] = val; }
                 PyValue::Dict(d) => { d.borrow_mut().insert(idx.as_key()?, val); }
                 PyValue::Tuple(_) => return py_err("TypeError", "tuple object does not support item assignment"),
-                PyValue::Instance { class_val, .. } => { if let Some(m) = get_class_method(class_val, "__setitem__") { let bound = PyValue::BoundMethod { receiver: Box::new(obj.clone()), func: Box::new(m) }; call_func(rt, bound, vec![idx, val])?; } else { return py_err("TypeError", "object does not support item assignment"); } }
+                PyValue::Instance { class_val, .. } => {
+                    if let Some(m) = get_class_method(class_val, "__setitem__") { let bound = PyValue::BoundMethod { receiver: Box::new(obj.clone()), func: Box::new(m) }; call_func(rt, bound, vec![idx, val], HashMap::new())?; } else { return py_err("TypeError", "object does not support item assignment"); }
+                }
                 _ => return py_err("TypeError", "object does not support item assignment"),
             } Ok(ExecStatus::Continue)
         }
@@ -635,24 +579,23 @@ fn exec_stmt(rt: &mut Runtime, env: &Rc<RefCell<Env>>, stmt: &Stmt) -> Result<Ex
         }
         Stmt::If(t, b, e) => { if eval_expr(rt, env, t)?.is_truthy() { exec_block(rt, env, b) } else { exec_block(rt, env, e) } }
         Stmt::While(t, b) => { while eval_expr(rt, env, t)?.is_truthy() { match exec_block(rt, env, b)? { ExecStatus::Return(v) => return Ok(ExecStatus::Return(v)), ExecStatus::Break => break, _ => {} } } Ok(ExecStatus::Continue) }
-        Stmt::For(var_expr, iter, b) => {
-            let it = eval_expr(rt, env, iter)?;
-            let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "object is not iterable") };
-            for item in items { assign_expr(rt, env, var_expr, item)?; match exec_block(rt, env, b)? { ExecStatus::Return(ret) => return Ok(ExecStatus::Return(ret)), ExecStatus::Break => break, _ => {} } } Ok(ExecStatus::Continue)
+        Stmt::For(v, iter, b) => {
+            let it = eval_expr(rt, env, iter)?; let items = match it { PyValue::List(l) => l.borrow().clone(), PyValue::Tuple(t) => t, PyValue::Str(s) => s.chars().map(|c| PyValue::Str(c.to_string())).collect(), _ => return py_err("TypeError", "object is not iterable") };
+            for item in items { env.borrow_mut().assign(v, item); match exec_block(rt, env, b)? { ExecStatus::Return(ret) => return Ok(ExecStatus::Return(ret)), ExecStatus::Break => break, _ => {} } } Ok(ExecStatus::Continue)
         }
-        Stmt::FunctionDef(n, p, b, decorators) => { 
-            let mut func_val = PyValue::Function { name: n.clone(), params: p.clone(), body: Rc::new(b.clone()), closure: Rc::clone(env) };
-            
-            // --- 處理裝飾器 (由內而外套用) ---
-            for dec_expr in decorators.iter().rev() {
-                let decorator = eval_expr(rt, env, dec_expr)?;
-                func_val = call_func(rt, decorator, vec![func_val])?;
+        Stmt::FunctionDef(n, p, vararg, b) => {
+            let mut params = Vec::new(); let mut defaults = HashMap::new();
+            for (p_name, p_def) in p {
+                params.push(p_name.clone());
+                if let Some(def_expr) = p_def { defaults.insert(p_name.clone(), eval_expr(rt, env, def_expr)?); }
             }
-            
-            env.borrow_mut().set(n, func_val); Ok(ExecStatus::Continue) 
+            env.borrow_mut().set(n, PyValue::Function { name: n.clone(), params, defaults, vararg: vararg.clone(), body: Rc::new(b.clone()), closure: Rc::clone(env) });
+            Ok(ExecStatus::Continue)
         }
         Stmt::ClassDef(n, base_expr, b) => {
-            let base_val = if let Some(expr) = base_expr { let v = eval_expr(rt, env, expr)?; if !matches!(v, PyValue::Class { .. }) { return py_err("TypeError", "base is not a class"); } Some(Box::new(v)) } else { None };
+            let base_val = if let Some(expr) = base_expr {
+                let v = eval_expr(rt, env, expr)?; if !matches!(v, PyValue::Class { .. }) { return py_err("TypeError", "base is not a class"); } Some(Box::new(v))
+            } else { None };
             let class_env = Env::new(Some(Rc::clone(env))); exec_block(rt, &class_env, b)?;
             let methods = class_env.borrow().vars.clone();
             env.borrow_mut().set(n, PyValue::Class { name: n.clone(), base: base_val, methods: Rc::new(methods) }); Ok(ExecStatus::Continue)
@@ -665,13 +608,18 @@ fn exec_stmt(rt: &mut Runtime, env: &Rc<RefCell<Env>>, stmt: &Stmt) -> Result<Ex
                         let except_env = Env::new(Some(Rc::clone(env))); if let Some(var) = exc_as { except_env.borrow_mut().set(&var, exc); }
                         exec_block(rt, &except_env, except_body)
                     } else { Err(exc) }
-                }
-                Ok(status) => Ok(status)
+                } Ok(status) => Ok(status)
             }
         }
         Stmt::Raise(e) => { Err(eval_expr(rt, env, e)?) }
-        Stmt::Import(mod_name) => { let module = load_module(rt, mod_name)?; let bind_name = mod_name.split('.').last().unwrap(); env.borrow_mut().assign(bind_name, module); Ok(ExecStatus::Continue) }
-        Stmt::FromImport(mod_name, names) => { let module = load_module(rt, mod_name)?; if let PyValue::Module(_, mod_env) = module { for n in names { let val = mod_env.borrow().get(n)?; env.borrow_mut().assign(n, val); } } Ok(ExecStatus::Continue) }
+        Stmt::Import(mod_name) => {
+            let module = load_module(rt, mod_name)?; let bind_name = mod_name.split('.').last().unwrap();
+            env.borrow_mut().assign(bind_name, module); Ok(ExecStatus::Continue)
+        }
+        Stmt::FromImport(mod_name, names) => {
+            let module = load_module(rt, mod_name)?;
+            if let PyValue::Module(_, mod_env) = module { for n in names { let val = mod_env.borrow().get(n)?; env.borrow_mut().assign(n, val); } } Ok(ExecStatus::Continue)
+        }
         Stmt::Return(e) => Ok(ExecStatus::Return(if let Some(x) = e { eval_expr(rt, env, x)? } else { PyValue::None })),
         Stmt::Break => Ok(ExecStatus::Break), Stmt::Continue => Ok(ExecStatus::ContinueLoop), Stmt::Pass => Ok(ExecStatus::Continue),
     }
@@ -681,46 +629,90 @@ fn exec_block(rt: &mut Runtime, env: &Rc<RefCell<Env>>, stmts: &[Stmt]) -> Resul
     for s in stmts { let st = exec_stmt(rt, env, s)?; if !matches!(st, ExecStatus::Continue) { return Ok(st); } } Ok(ExecStatus::Continue)
 }
 
-fn call_func(rt: &mut Runtime, func: PyValue, args: Vec<PyValue>) -> Result<PyValue, PyValue> {
+fn call_func(rt: &mut Runtime, func: PyValue, args: Vec<PyValue>, kwargs: HashMap<String, PyValue>) -> Result<PyValue, PyValue> {
     match func {
-        PyValue::Builtin(_, f) => f(rt, args),
+        PyValue::Builtin(_, f) => f(rt, args, kwargs), // Builtin 簽名更新
+        
         PyValue::Method(obj, name) => {
             match (&*obj, name.as_str()) {
                 (PyValue::List(l), "append") => { l.borrow_mut().push(args[0].clone()); Ok(PyValue::None) }
                 (PyValue::List(l), "pop") => { Ok(l.borrow_mut().pop().unwrap_or(PyValue::None)) }
                 (PyValue::Dict(d), "keys") => { let keys: Vec<PyValue> = d.borrow().keys().map(|k| PyValue::Str(k.clone())).collect(); Ok(PyValue::List(Rc::new(RefCell::new(keys)))) }
                 (PyValue::Dict(d), "values") => { let vals: Vec<PyValue> = d.borrow().values().cloned().collect(); Ok(PyValue::List(Rc::new(RefCell::new(vals)))) }
-                (PyValue::Str(s), "split") => { let sep = if args.is_empty() { " " } else { if let PyValue::Str(sep) = &args[0] { sep } else { return py_err("TypeError", "separator must be str"); } }; let parts: Vec<PyValue> = s.split(sep).map(|p| PyValue::Str(p.to_string())).collect(); Ok(PyValue::List(Rc::new(RefCell::new(parts)))) }
-                (PyValue::Str(s), "join") => { if args.is_empty() { return py_err("TypeError", "join() takes exactly one argument"); } if let PyValue::List(l) = &args[0] { let strings: Result<Vec<String>, _> = l.borrow().iter().map(|v| if let PyValue::Str(sv) = v { Ok(sv.clone()) } else { Err(()) }).collect(); if let Ok(strings) = strings { return Ok(PyValue::Str(strings.join(s))); } } py_err("TypeError", "join() expects list of strings") }
+                (PyValue::Str(s), "split") => {
+                    let sep = if args.is_empty() { " " } else { if let PyValue::Str(sep) = &args[0] { sep } else { return py_err("TypeError", "separator must be str"); } };
+                    let parts: Vec<PyValue> = s.split(sep).map(|p| PyValue::Str(p.to_string())).collect(); Ok(PyValue::List(Rc::new(RefCell::new(parts))))
+                }
+                (PyValue::Str(s), "join") => {
+                    if args.is_empty() { return py_err("TypeError", "join() takes exactly one argument"); }
+                    if let PyValue::List(l) = &args[0] { let strings: Result<Vec<String>, _> = l.borrow().iter().map(|v| if let PyValue::Str(sv) = v { Ok(sv.clone()) } else { Err(()) }).collect(); if let Ok(strings) = strings { return Ok(PyValue::Str(strings.join(s))); } }
+                    py_err("TypeError", "join() expects list of strings")
+                }
+                (PyValue::File(f), "read") => { if let Some(file) = f.borrow_mut().as_mut() { let mut s = String::new(); file.read_to_string(&mut s).map_err(|e| py_err_val("IOError", &e.to_string()))?; Ok(PyValue::Str(s)) } else { py_err("ValueError", "I/O operation on closed file.") } }
+                (PyValue::File(f), "write") => { if let Some(file) = f.borrow_mut().as_mut() { if args.is_empty() { return py_err("TypeError", "write() takes exactly one argument"); } let s = py_to_string(rt, args[0].clone())?; file.write_all(s.as_bytes()).map_err(|e| py_err_val("IOError", &e.to_string()))?; Ok(PyValue::Int(s.len() as i64)) } else { py_err("ValueError", "I/O operation on closed file.") } }
+                (PyValue::File(f), "close") => { *f.borrow_mut() = None; Ok(PyValue::None) }
                 _ => py_err("AttributeError", &format!("unknown method '{}'", name))
             }
         }
-        PyValue::BuiltinMethodFile(f, method_name) => {
-            let mut file_opt = f.borrow_mut();
-            match method_name.as_str() {
-                "read" => { if let Some(file) = file_opt.as_mut() { let mut s = String::new(); file.read_to_string(&mut s).map_err(|e| py_err_val("IOError", &e.to_string()))?; Ok(PyValue::Str(s)) } else { py_err("ValueError", "I/O operation on closed file.") } }
-                "write" => { if let Some(file) = file_opt.as_mut() { if args.is_empty() { return py_err("TypeError", "write() takes exactly one argument"); } let s = py_to_string(rt, args[0].clone())?; file.write_all(s.as_bytes()).map_err(|e| py_err_val("IOError", &e.to_string()))?; Ok(PyValue::Int(s.len() as i64)) } else { py_err("ValueError", "I/O operation on closed file.") } }
-                "close" => { *file_opt = None; Ok(PyValue::None) }
-                _ => py_err("AttributeError", "unknown method")
-            }
-        }
-PyValue::Class { .. } => {
-            // 直接 clone 整個 func，不再在 match 裡解構它，完美避開所有權問題！
-            let inst = PyValue::Instance { 
-                class_val: Box::new(func.clone()), 
-                attrs: Rc::new(RefCell::new(HashMap::new())) 
-            };
+
+        PyValue::Class { .. } => {
+            let inst = PyValue::Instance { class_val: Box::new(func.clone()), attrs: Rc::new(RefCell::new(HashMap::new())) };
             if let Some(init) = get_class_method(&func, "__init__") { 
-                let mut a = vec![inst.clone()]; 
-                a.extend(args); 
-                call_func(rt, init, a)?; 
+                let mut a = vec![inst.clone()]; a.extend(args); call_func(rt, init, a, kwargs)?; 
             }
             Ok(inst)
         }
-        PyValue::BoundMethod { receiver, func } => { let mut a = vec![*receiver]; a.extend(args); call_func(rt, *func, a) }
-        PyValue::Function { name, params, body, closure } => {
-            if args.len() != params.len() { return py_err("TypeError", &format!("{}() takes {} positional arguments but {} were given", name, params.len(), args.len())); }
-            let local = Env::new(Some(closure)); for (p, a) in params.iter().zip(args) { local.borrow_mut().set(p, a); }
+        PyValue::BoundMethod { receiver, func } => { let mut a = vec![*receiver]; a.extend(args); call_func(rt, *func, a, kwargs) }
+        
+        PyValue::Function { name, params, defaults, vararg, body, closure } => {
+            let local = Env::new(Some(closure));
+            let mut arg_idx = 0;
+            let mut bound_params = std::collections::HashSet::new();
+
+            // 1. 綁定 Positional Arguments (依序對應)
+            for arg_val in args.iter() {
+                if arg_idx < params.len() {
+                    let p_name = &params[arg_idx];
+                    local.borrow_mut().set(p_name, arg_val.clone());
+                    bound_params.insert(p_name.clone());
+                    arg_idx += 1;
+                } else {
+                    break;
+                }
+            }
+
+            // 2. 處理超出的 Positional Arguments (*args)
+            if let Some(vname) = &vararg {
+                let rest = args[arg_idx..].to_vec();
+                local.borrow_mut().set(vname, PyValue::Tuple(rest));
+            } else if arg_idx < args.len() {
+                return py_err("TypeError", &format!("{}() takes {} positional arguments but {} were given", name, params.len(), args.len()));
+            }
+
+            // 3. 綁定 Keyword Arguments
+            for (kw_name, kw_val) in kwargs {
+                if params.contains(&kw_name) {
+                    if bound_params.contains(&kw_name) {
+                        return py_err("TypeError", &format!("{}() got multiple values for argument '{}'", name, kw_name));
+                    }
+                    local.borrow_mut().set(&kw_name, kw_val);
+                    bound_params.insert(kw_name.clone());
+                } else {
+                    return py_err("TypeError", &format!("{}() got an unexpected keyword argument '{}'", name, kw_name));
+                }
+            }
+
+            // 4. 填補預設參數 (Defaults)
+            for p_name in params.iter() {
+                if !bound_params.contains(p_name) {
+                    if let Some(def_val) = defaults.get(p_name) {
+                        local.borrow_mut().set(p_name, def_val.clone());
+                    } else {
+                        return py_err("TypeError", &format!("{}() missing required argument: '{}'", name, p_name));
+                    }
+                }
+            }
+
             match exec_block(rt, &local, &body)? { ExecStatus::Return(v) => Ok(v), _ => Ok(PyValue::None) }
         }
         _ => py_err("TypeError", "object is not callable"),
@@ -733,17 +725,41 @@ PyValue::Class { .. } => {
 
 fn install_builtins(globals: &Rc<RefCell<Env>>) {
     let mut e = globals.borrow_mut();
-    e.set("print", PyValue::Builtin("print".into(), Rc::new(|rt, a| { let mut out = Vec::new(); for val in a { out.push(py_to_string(rt, val.clone())?); } println!("{}", out.join(" ")); Ok(PyValue::None) })));
-    e.set("str", PyValue::Builtin("str".into(), Rc::new(|rt, a| { if a.len() != 1 { return py_err("TypeError", "str() takes exactly one argument"); } Ok(PyValue::Str(py_to_string(rt, a[0].clone())?)) })));
-    e.set("len", PyValue::Builtin("len".into(), Rc::new(|_, a| { if a.is_empty() { return py_err("TypeError", "len() takes exactly one argument (0 given)"); } match &a[0] { PyValue::Str(s) => Ok(PyValue::Int(s.len() as i64)), PyValue::List(l) => Ok(PyValue::Int(l.borrow().len() as i64)), PyValue::Tuple(t) => Ok(PyValue::Int(t.len() as i64)), PyValue::Dict(d) => Ok(PyValue::Int(d.borrow().len() as i64)), _ => py_err("TypeError", "object has no len()") } })));
-    e.set("range", PyValue::Builtin("range".into(), Rc::new(|_, a| { if a.is_empty() { return py_err("TypeError", "range expected 1 argument, got 0"); } let end = match a[0] { PyValue::Int(i) => i, _ => return py_err("TypeError", "range() integer argument expected") }; Ok(PyValue::List(Rc::new(RefCell::new((0..end).map(PyValue::Int).collect())))) })));
-    e.set("Exception", PyValue::Builtin("Exception".into(), Rc::new(|_, a| { let arg = a.get(0).cloned().unwrap_or(PyValue::None); Ok(PyValue::Exception("Exception".into(), Box::new(arg))) })));
-    e.set("open", PyValue::Builtin("open".into(), Rc::new(|_, a| { if a.is_empty() { return py_err("TypeError", "open() expected at least 1 argument"); } let path = if let PyValue::Str(s) = &a[0] { s } else { return py_err("TypeError", "expected string as path"); }; let mode = if a.len() > 1 { if let PyValue::Str(s) = &a[1] { s.clone() } else { return py_err("TypeError", "expected string as mode"); } } else { "r".to_string() }; let mut opts = OpenOptions::new(); match mode.as_str() { "r" => opts.read(true), "w" => opts.write(true).create(true).truncate(true), "a" => opts.write(true).create(true).append(true), _ => return py_err("ValueError", "invalid mode"), }; let file = opts.open(path).map_err(|err| py_err_val("IOError", &err.to_string()))?; Ok(PyValue::File(Rc::new(RefCell::new(Some(file))))) })));
+    // 修改內建函數閉包簽名，略過 `kw` (kwargs) 不處理
+    e.set("print", PyValue::Builtin("print".into(), Rc::new(|rt, a, _kw| { 
+        let mut out = Vec::new(); for val in a { out.push(py_to_string(rt, val.clone())?); }
+        println!("{}", out.join(" ")); Ok(PyValue::None) 
+    })));
+    e.set("str", PyValue::Builtin("str".into(), Rc::new(|rt, a, _kw| {
+        if a.len() != 1 { return py_err("TypeError", "str() takes exactly one argument"); }
+        Ok(PyValue::Str(py_to_string(rt, a[0].clone())?))
+    })));
+    e.set("len", PyValue::Builtin("len".into(), Rc::new(|_, a, _kw| {
+        if a.is_empty() { return py_err("TypeError", "len() takes exactly one argument (0 given)"); }
+        match &a[0] { PyValue::Str(s) => Ok(PyValue::Int(s.len() as i64)), PyValue::List(l) => Ok(PyValue::Int(l.borrow().len() as i64)),
+            PyValue::Tuple(t) => Ok(PyValue::Int(t.len() as i64)), PyValue::Dict(d) => Ok(PyValue::Int(d.borrow().len() as i64)), _ => py_err("TypeError", "object has no len()") }
+    })));
+    e.set("range", PyValue::Builtin("range".into(), Rc::new(|_, a, _kw| {
+        if a.is_empty() { return py_err("TypeError", "range expected 1 argument, got 0"); }
+        let end = match a[0] { PyValue::Int(i) => i, _ => return py_err("TypeError", "range() integer argument expected") };
+        Ok(PyValue::List(Rc::new(RefCell::new((0..end).map(PyValue::Int).collect()))))
+    })));
+    e.set("Exception", PyValue::Builtin("Exception".into(), Rc::new(|_, a, _kw| {
+        let arg = a.get(0).cloned().unwrap_or(PyValue::None); Ok(PyValue::Exception("Exception".into(), Box::new(arg)))
+    })));
+    e.set("open", PyValue::Builtin("open".into(), Rc::new(|_, a, _kw| {
+        if a.is_empty() { return py_err("TypeError", "open() expected at least 1 argument"); }
+        let path = if let PyValue::Str(s) = &a[0] { s } else { return py_err("TypeError", "expected string as path"); };
+        let mode = if a.len() > 1 { if let PyValue::Str(s) = &a[1] { s.clone() } else { return py_err("TypeError", "expected string as mode"); } } else { "r".to_string() };
+        let mut opts = OpenOptions::new();
+        match mode.as_str() { "r" => opts.read(true), "w" => opts.write(true).create(true).truncate(true), "a" => opts.write(true).create(true).append(true), _ => return py_err("ValueError", "invalid mode"), };
+        let file = opts.open(path).map_err(|err| py_err_val("IOError", &err.to_string()))?; Ok(PyValue::File(Rc::new(RefCell::new(Some(file)))))
+    })));
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    if args.len() < 2 { eprintln!("Usage: ./py5 <script.py>"); process::exit(1); }
+    if args.len() < 2 { eprintln!("Usage: ./py4 <script.py>"); process::exit(1); }
     let src = fs::read_to_string(&args[1]).unwrap_or_else(|_| { eprintln!("cannot open {}", args[1]); process::exit(1); });
 
     let globals = Env::new(None); install_builtins(&globals);
